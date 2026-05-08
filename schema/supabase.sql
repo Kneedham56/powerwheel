@@ -1,4 +1,3 @@
-7. Data Models
 watchlist
 sqlcreate table watchlist (
   id              uuid primary key default uuid_generate_v4(),
