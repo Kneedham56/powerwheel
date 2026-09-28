@@ -246,8 +246,8 @@ export function summarize(
   const chains = buildChains(pos);
   const closed = chains.filter((c) => inPeriod(c.closed, period));
 
-  const winners = closed.filter((c) => c.net > 0);
-  const losers = closed.filter((c) => c.net < 0);
+  const winners = closed.filter((c) => c.net > 0 && c.outcome !== "assigned");
+  const losers = closed.filter((c) => c.net < 0 || c.outcome === "assigned");
   const realizedOptions = sum(closed.map((c) => c.net));
   const realizedStock = sum(
     pos
@@ -391,7 +391,7 @@ export function groupChains(
   }
   return [...groups.entries()]
     .map(([key, list]) => {
-      const wins = list.filter((c) => c.net > 0).length;
+      const wins = list.filter((c) => c.net > 0 && c.outcome !== "assigned").length;
       const withColl = list.filter((c) => c.collateral > 0);
       const stream = by === "stream" ? streams.find((s) => s.id === key) : undefined;
       return {
