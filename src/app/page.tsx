@@ -286,13 +286,65 @@ function GroupTable({
   );
 }
 
-/** What made up a week: every option trade that moved cash, biggest impact first. */
+interface BreakdownRow {
+  key: string;
+  date: string;
+  contract: string;
+  action: string;
+  stream_id: string;
+  stream_name: string;
+  quantity: number;
+  price: number; // per share; net per share for rolls
+  amount: number;
+}
+
+/** One row per trade, except a roll, which collapses to one net row: old contract(s) → new. */
+function breakdownRows(txns: TransactionRow[]): BreakdownRow[] {
+  const rolls = new Map<string, TransactionRow[]>();
+  const rows: BreakdownRow[] = [];
+  for (const t of txns) {
+    if (t.roll_group_id) rolls.set(t.roll_group_id, [...(rolls.get(t.roll_group_id) ?? []), t]);
+    else
+      rows.push({
+        key: t.id,
+        date: t.occurred_at,
+        contract: contractLabel(t),
+        action: ACTION_LABEL[t.action] ?? t.action,
+        stream_id: t.stream_id,
+        stream_name: t.stream_name,
+        quantity: Number(t.quantity),
+        price: Number(t.price),
+        amount: Number(t.amount),
+      });
+  }
+  for (const [id, legs] of rolls) {
+    const closes = legs.filter((l) => l.action === "buy_to_close" || l.action === "sell_to_close");
+    const opens = legs.filter((l) => l.action === "sell_to_open" || l.action === "buy_to_open");
+    const qty = opens.reduce((s, l) => s + Number(l.quantity), 0) || closes.reduce((s, l) => s + Number(l.quantity), 0);
+    const amount = legs.reduce((s, l) => s + Number(l.amount), 0);
+    const label = (ls: TransactionRow[]) => [...new Set(ls.map((l) => contractLabel(l)))].join(" + ");
+    rows.push({
+      key: id,
+      date: legs.map((l) => l.occurred_at).sort()[0],
+      contract: opens.length && closes.length ? `${label(closes)} → ${label(opens)}` : label(legs),
+      action: opens.length && closes.length ? (amount >= 0 ? "Roll (credit)" : "Roll (debit)") : "Roll (partial)",
+      stream_id: legs[0].stream_id,
+      stream_name: legs[0].stream_name,
+      quantity: qty,
+      price: qty ? amount / (qty * 100) : 0,
+      amount,
+    });
+  }
+  return rows.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** What made up a week, in trade order. Rolls show as their net credit/debit. */
 function WeekBreakdown({ txns, streamColor }: { txns: TransactionRow[]; streamColor: Map<string, string | null> }) {
   if (!txns.length) return <p className="text-xs text-muted">No option cash flow this week.</p>;
   const byTicker = new Map<string, number>();
   for (const t of txns) byTicker.set(t.ticker, (byTicker.get(t.ticker) ?? 0) + Number(t.amount));
   const tickers = [...byTicker.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const sorted = [...txns].sort((a, b) => Math.abs(Number(b.amount)) - Math.abs(Number(a.amount)));
+  const rows = breakdownRows(txns);
 
   return (
     <div className="space-y-3">
@@ -317,21 +369,18 @@ function WeekBreakdown({ txns, streamColor }: { txns: TransactionRow[]; streamCo
           </tr>
         </thead>
         <tbody>
-          {sorted.map((t) => (
-            <tr key={t.id}>
-              <td>{shortDate(t.occurred_at)}</td>
-              <td>{contractLabel(t)}</td>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td>{shortDate(r.date)}</td>
+              <td className="!whitespace-normal">{r.contract}</td>
+              <td>{r.action}</td>
               <td>
-                {ACTION_LABEL[t.action] ?? t.action}
-                {t.roll_group_id && <span className="ml-1 text-muted">(roll)</span>}
+                <StreamDot color={streamColor.get(r.stream_id)} />
+                {r.stream_name}
               </td>
-              <td>
-                <StreamDot color={streamColor.get(t.stream_id)} />
-                {t.stream_name}
-              </td>
-              <td>{num(t.quantity)}</td>
-              <td>{money(t.price)}</td>
-              <td className={signClass(Number(t.amount))}>{money(Number(t.amount))}</td>
+              <td>{num(r.quantity)}</td>
+              <td>{money(r.price)}</td>
+              <td className={signClass(r.amount)}>{money(r.amount)}</td>
             </tr>
           ))}
         </tbody>
