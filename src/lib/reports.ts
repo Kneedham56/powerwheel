@@ -81,20 +81,28 @@ function inPeriod(date: string | null, p: Period): boolean {
 // ---------------------------------------------------------------------------
 
 export interface Scope {
-  streamId?: string;
-  accountId?: string;
+  /** selected streams; undefined or empty = all streams */
+  streamIds?: string[];
+  /** stream → accounts it has positions in (for the capital fallback); see streamAccountMap */
+  streamAccounts?: Map<string, string[]>;
+}
+
+function inScope(streamId: string, s: Scope) {
+  return !s.streamIds?.length || s.streamIds.includes(streamId);
 }
 
 export function scopePositions(rows: PositionRow[], s: Scope) {
-  return rows.filter(
-    (r) => (!s.streamId || r.stream_id === s.streamId) && (!s.accountId || r.account_id === s.accountId),
-  );
+  return rows.filter((r) => inScope(r.stream_id, s));
 }
 
 export function scopeTransactions(rows: TransactionRow[], s: Scope) {
-  return rows.filter(
-    (r) => (!s.streamId || r.stream_id === s.streamId) && (!s.accountId || r.account_id === s.accountId),
-  );
+  return rows.filter((r) => inScope(r.stream_id, s));
+}
+
+export function streamAccountMap(rows: { stream_id: string; account_id: string }[]) {
+  const m = new Map<string, Set<string>>();
+  for (const r of rows) m.set(r.stream_id, (m.get(r.stream_id) ?? new Set()).add(r.account_id));
+  return new Map([...m].map(([k, v]) => [k, [...v]]));
 }
 
 // ---------------------------------------------------------------------------
@@ -162,22 +170,29 @@ export function buildChains(positions: PositionRow[]): Chain[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Capital for a scope as of a date: sum of the latest snapshot at or before
- * `date` for each account in scope. When scoped to a stream and that stream has
- * its own snapshots, those are used instead of whole-account values.
+ * Capital for a scope as of a date, from the latest snapshot at or before `date`.
+ *  - All streams: whole-account snapshots for every account.
+ *  - Selected streams: each stream's own snapshots when it has them (e.g. Tesla CC = the
+ *    TSLA shares, Joint Wheel = Joint's cash); otherwise its accounts' whole-account value.
  */
-export function capitalAsOf(snapshots: Snapshot[], date: string, s: Scope, streamAccounts?: string[]): number | null {
-  let rows = snapshots.filter((x) => x.as_of <= date);
-  if (s.streamId) {
-    const streamRows = rows.filter((x) => x.stream_id === s.streamId);
-    rows = streamRows.length
-      ? streamRows
-      : rows.filter((x) => !x.stream_id && (streamAccounts ?? []).includes(x.account_id));
-  } else {
-    rows = rows.filter((x) => !x.stream_id);
-  }
-  if (s.accountId) rows = rows.filter((x) => x.account_id === s.accountId);
+export function capitalAsOf(snapshots: Snapshot[], date: string, s: Scope): number | null {
+  const rows = snapshots.filter((x) => x.as_of <= date);
+  if (!s.streamIds?.length) return sumLatest(rows.filter((x) => !x.stream_id));
 
+  let total: number | null = null;
+  const fallbackAccounts = new Set<string>();
+  for (const sid of s.streamIds) {
+    const own = sumLatest(rows.filter((x) => x.stream_id === sid));
+    if (own !== null) total = (total ?? 0) + own;
+    else for (const a of s.streamAccounts?.get(sid) ?? []) fallbackAccounts.add(a);
+  }
+  const accounts = sumLatest(rows.filter((x) => !x.stream_id && fallbackAccounts.has(x.account_id)));
+  if (accounts !== null) total = (total ?? 0) + accounts;
+  return total;
+}
+
+/** Sum of the latest snapshot per (account, stream). */
+function sumLatest(rows: Snapshot[]): number | null {
   const latest = new Map<string, Snapshot>();
   for (const r of rows) {
     const k = `${r.account_id}:${r.stream_id ?? ""}`;
@@ -259,23 +274,22 @@ export function summarize(
   const premiumCollected = sum(optTx.filter((t) => t.action === "sell_to_open").map((t) => Number(t.amount)));
   const buybackCost = -sum(optTx.filter((t) => t.action === "buy_to_close").map((t) => Number(t.amount)));
 
-  const streamAccounts = [...new Set(pos.map((p) => p.account_id))];
   const startDate = period.from ?? (chains.at(-1)?.opened ?? period.to);
-  let startCapital = capitalAsOf(snapshots, startDate, scope, streamAccounts);
+  let startCapital = capitalAsOf(snapshots, startDate, scope);
   let startCapitalDate: string | null = startCapital === null ? null : startDate;
   if (startCapital === null) {
     // no snapshot before the period: fall back to the earliest one inside it
     const first = snapshots.filter((x) => inPeriod(x.as_of, period)).map((x) => x.as_of).sort()[0];
     if (first) {
-      startCapital = capitalAsOf(snapshots, first, scope, streamAccounts);
+      startCapital = capitalAsOf(snapshots, first, scope);
       startCapitalDate = first;
     }
   }
-  const endCapital = capitalAsOf(snapshots, period.to, scope, streamAccounts);
+  const endCapital = capitalAsOf(snapshots, period.to, scope);
   const netDeposits = sum(
     snapshots
-      .filter((s) => inPeriod(s.as_of, period) && (!scope.accountId || s.account_id === scope.accountId))
-      .filter((s) => (scope.streamId ? s.stream_id === scope.streamId : !s.stream_id))
+      .filter((s) => inPeriod(s.as_of, period))
+      .filter((s) => (scope.streamIds?.length ? !!s.stream_id && scope.streamIds.includes(s.stream_id) : !s.stream_id))
       .map((s) => Number(s.net_deposits)),
   );
   const realized = realizedOptions + realizedStock;
@@ -384,13 +398,12 @@ export function weekly(txns: TransactionRow[], snapshots: Snapshot[], period: Pe
     row.net += Number(t.amount);
     weeks.set(w, row);
   }
-  const streamAccounts = [...new Set(tx.map((t) => t.account_id))];
   let running = 0;
   return [...weeks.values()]
     .sort((a, b) => a.week.localeCompare(b.week))
     .map((r) => {
       running += r.net;
-      const capital = capitalAsOf(snapshots, addDays(r.week, 6), scope, streamAccounts);
+      const capital = capitalAsOf(snapshots, addDays(r.week, 6), scope);
       return { ...r, capital, returnPct: capital ? r.net / capital : null, cumulative: running };
     });
 }

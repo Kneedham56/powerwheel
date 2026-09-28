@@ -81,6 +81,73 @@ export function Chips({
   );
 }
 
+/** Parse a comma-separated multi-select param, keeping only known values. */
+export function multiParam(sp: SP, key: string, known: string[]): string[] {
+  const raw = param(sp, key);
+  return raw ? raw.split(",").filter((v) => known.includes(v)) : [];
+}
+
+/**
+ * Chips that toggle values in a comma-separated search param. No param = everything on;
+ * turning off the last one (or turning everything back on) clears the param.
+ */
+export function ToggleChips({
+  sp,
+  name,
+  options,
+  path,
+}: {
+  sp: SP;
+  name: string;
+  options: { value: string; label: string; color?: string | null }[];
+  path: string;
+}) {
+  const all = options.map((o) => o.value);
+  const selected = multiParam(sp, name, all);
+  const active = selected.length ? selected : all;
+
+  const hrefWith = (values: string[]) => {
+    const next = new URLSearchParams();
+    for (const [k, v] of Object.entries(sp)) {
+      if (typeof v === "string" && k !== "ok" && k !== "error" && k !== name) next.set(k, v);
+    }
+    if (values.length && values.length < all.length) next.set(name, all.filter((v) => values.includes(v)).join(","));
+    const qs = next.toString();
+    return qs ? `${path}?${qs}` : path;
+  };
+  const hrefFor = (value: string) =>
+    hrefWith(active.includes(value) ? active.filter((v) => v !== value) : [...active, value]);
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {options.map((o) => {
+        const on = active.includes(o.value);
+        return (
+          <Link
+            key={o.value}
+            href={hrefFor(o.value)}
+            aria-pressed={on}
+            className={`inline-flex items-center rounded-full border px-3 py-1 text-xs ${
+              on ? "border-accent bg-accent text-white" : "border-border text-muted hover:text-foreground"
+            }`}
+          >
+            {o.color && <span className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: o.color }} />}
+            {o.label}
+          </Link>
+        );
+      })}
+      {selected.length > 0 && (
+        <span className="ml-2 text-xs text-muted">
+          {selected.length} of {all.length} ·{" "}
+          <Link className="underline hover:text-foreground" href={hrefWith([])}>
+            show all
+          </Link>
+        </span>
+      )}
+    </div>
+  );
+}
+
 const STATUS_STYLE: Record<string, string> = {
   open: "bg-accent/15 text-accent",
   expired: "bg-gain/15 text-gain",
