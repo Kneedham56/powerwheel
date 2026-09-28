@@ -215,7 +215,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
         <div className="mb-2 flex items-baseline justify-between">
           <h2 className="font-medium">Wheel cycles</h2>
           <span className="text-xs text-muted">
-            put → assigned shares → covered calls → shares gone · click a cycle for its story
+            put → assigned shares → covered calls → shares gone · click a cycle for its plays, newest first
           </span>
         </div>
         <div className="gtable">
@@ -224,7 +224,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
             <span className="text-left">Ticker</span>
             <span>Account</span>
             <span>Assigned</span>
-            <span>Done</span>
+            <span>Complete</span>
             <span>Shares</span>
             <span>Put prem.</span>
             <span>Call prem.</span>
@@ -414,10 +414,17 @@ function breakdownRows(txns: TransactionRow[], posStatus: Map<string, string>): 
       status: opens.length ? posStatus.get(opens[0].position_id) : posStatus.get(legs[0].position_id),
     });
   }
-  return rows.sort((a, b) => a.date.localeCompare(b.date));
+  // puts first, then calls; A→Z by ticker; biggest premium first
+  const typeOrder = (t: BreakdownRow["optionType"]) => (t === "put" ? 0 : t === "call" ? 1 : 2);
+  return rows.sort(
+    (a, b) =>
+      typeOrder(a.optionType) - typeOrder(b.optionType) ||
+      a.ticker.localeCompare(b.ticker) ||
+      b.amount - a.amount,
+  );
 }
 
-/** What made up a week, in trade order. Rolls show as their net credit/debit. */
+/** What made up a week, by type → ticker → premium. Rolls show as their net credit/debit. */
 const OUTCOME_LABEL: Record<string, string> = { closed: "bought back" };
 
 function WeekBreakdown({
@@ -456,7 +463,7 @@ function WeekBreakdown({
             <th>Stream</th>
             <th>Qty</th>
             <th>Price</th>
-            <th>Cash</th>
+            <th>Premium</th>
             <th>Outcome</th>
           </tr>
         </thead>
@@ -484,7 +491,7 @@ function WeekBreakdown({
   );
 }
 
-/** Everything that happened in one wheel cycle, in date order. */
+/** Everything that happened in one wheel cycle, newest first. */
 function CycleStory({ cycle: c }: { cycle: Cycle }) {
   const strikes = (ch: Chain) =>
     ch.legs.map((l) => `${num(l.strike)}${l.option_type === "put" ? "P" : "C"} ×${num(l.quantity)}`).join(" → ");
@@ -519,7 +526,7 @@ function CycleStory({ cycle: c }: { cycle: Cycle }) {
         amount: sold ? Number(l.credits) - cost * sold : 0,
       };
     }),
-  ].sort((a, b) => a.date.localeCompare(b.date));
+  ].sort((a, b) => b.date.localeCompare(a.date)); // newest first
 
   return (
     <div className="space-y-2">
