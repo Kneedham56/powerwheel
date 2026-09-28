@@ -8,7 +8,7 @@ import { SESSION_COOKIE, authEnabled, isValidSession } from "@/lib/auth";
 export async function proxy(request: NextRequest) {
   if (!authEnabled()) return NextResponse.next();
   const path = request.nextUrl.pathname;
-  if (path === "/login" || path === "/auth/login") return NextResponse.next();
+  if (path === "/login" || path === "/auth/login" || path === "/api/keepalive") return NextResponse.next();
 
   if (await isValidSession(request.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
 
