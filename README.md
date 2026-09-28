@@ -2,6 +2,7 @@
 
 Tracking and reporting for an options wheel strategy: cash-secured puts, covered calls, rolls, buybacks and assignments.
 It tracks several accounts and reporting streams, and measures performance against account value.
+https://powerwheel-demo.vercel.app/
 
 > The original AI dashboard spec (watchlist, Polygon, Grok sentiment) is in [docs/PRD-v1.0.md](docs/PRD-v1.0.md) and is parked for now.
 
