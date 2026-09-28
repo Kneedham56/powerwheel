@@ -31,6 +31,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const weekTxns = weekTransactions(transactions, period, scope);
   const tickerChains = chainsByGroup(positions, period, scope, "ticker");
   const streamColor = new Map(streams.map((st) => [st.id, st.color]));
+  const posStatus = new Map(positions.map((p) => [p.id, p.status]));
 
   const years = [...new Set(transactions.map((t) => etDate(t.occurred_at).slice(0, 4)))].sort().reverse();
   const periodOptions = [
@@ -171,7 +172,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
                 money(w.cumulative, true),
               ]}
             >
-              <WeekBreakdown txns={weekTxns.get(w.week) ?? []} streamColor={streamColor} />
+              <WeekBreakdown txns={weekTxns.get(w.week) ?? []} streamColor={streamColor} posStatus={posStatus} />
             </Expandable>
           ))}
         </div>
@@ -294,10 +295,12 @@ interface BreakdownRow {
   quantity: number;
   price: number; // per share; net per share for rolls
   amount: number;
+  /** where the position ended up (for a roll: the new contract) */
+  status?: string;
 }
 
 /** One row per trade, except a roll, which collapses to one net row: old contract(s) → new. */
-function breakdownRows(txns: TransactionRow[]): BreakdownRow[] {
+function breakdownRows(txns: TransactionRow[], posStatus: Map<string, string>): BreakdownRow[] {
   const rolls = new Map<string, TransactionRow[]>();
   const rows: BreakdownRow[] = [];
   for (const t of txns) {
@@ -313,6 +316,7 @@ function breakdownRows(txns: TransactionRow[]): BreakdownRow[] {
         quantity: Number(t.quantity),
         price: Number(t.price),
         amount: Number(t.amount),
+        status: posStatus.get(t.position_id),
       });
   }
   for (const [id, legs] of rolls) {
@@ -331,18 +335,29 @@ function breakdownRows(txns: TransactionRow[]): BreakdownRow[] {
       quantity: qty,
       price: qty ? amount / (qty * 100) : 0,
       amount,
+      status: opens.length ? posStatus.get(opens[0].position_id) : posStatus.get(legs[0].position_id),
     });
   }
   return rows.sort((a, b) => a.date.localeCompare(b.date));
 }
 
 /** What made up a week, in trade order. Rolls show as their net credit/debit. */
-function WeekBreakdown({ txns, streamColor }: { txns: TransactionRow[]; streamColor: Map<string, string | null> }) {
+const OUTCOME_LABEL: Record<string, string> = { closed: "bought back" };
+
+function WeekBreakdown({
+  txns,
+  streamColor,
+  posStatus,
+}: {
+  txns: TransactionRow[];
+  streamColor: Map<string, string | null>;
+  posStatus: Map<string, string>;
+}) {
   if (!txns.length) return <p className="text-xs text-muted">No option cash flow this week.</p>;
   const byTicker = new Map<string, number>();
   for (const t of txns) byTicker.set(t.ticker, (byTicker.get(t.ticker) ?? 0) + Number(t.amount));
   const tickers = [...byTicker.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const rows = breakdownRows(txns);
+  const rows = breakdownRows(txns, posStatus);
 
   return (
     <div className="space-y-3">
@@ -364,6 +379,7 @@ function WeekBreakdown({ txns, streamColor }: { txns: TransactionRow[]; streamCo
             <th>Qty</th>
             <th>Price</th>
             <th>Cash</th>
+            <th>Outcome</th>
           </tr>
         </thead>
         <tbody>
@@ -379,6 +395,7 @@ function WeekBreakdown({ txns, streamColor }: { txns: TransactionRow[]; streamCo
               <td>{num(r.quantity)}</td>
               <td>{money(r.price)}</td>
               <td className={signClass(r.amount)}>{money(r.amount)}</td>
+              <td>{r.status && <StatusPill status={r.status} label={OUTCOME_LABEL[r.status]} />}</td>
             </tr>
           ))}
         </tbody>
