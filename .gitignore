@@ -1,0 +1,21 @@
+# secrets
+.env
+.env*.local
+
+# deps / build
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# sync scratch files
+sync/inbox/
+sync/processed/
+
+# misc
+.DS_Store
+Thumbs.db
+npm-debug.log*
+.vercel
