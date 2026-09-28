@@ -3,6 +3,7 @@
  *   npm run sql -- "select count(*) from positions"
  *   npm run sql -- -f supabase/migrations/0002_something.sql
  */
+import "./env";
 import { readFileSync } from "node:fs";
 import pg from "pg";
 
