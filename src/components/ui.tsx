@@ -156,8 +156,8 @@ const STATUS_STYLE: Record<string, string> = {
   rolled: "bg-purple-500/15 text-purple-600 dark:text-purple-400",
 };
 
-export function StatusPill({ status }: { status: string }) {
-  return <span className={`pill ${STATUS_STYLE[status] ?? ""}`}>{status}</span>;
+export function StatusPill({ status, label }: { status: string; label?: string }) {
+  return <span className={`pill ${STATUS_STYLE[status] ?? ""}`}>{label ?? status}</span>;
 }
 
 export function StreamDot({ color }: { color?: string | null }) {
