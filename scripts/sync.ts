@@ -1,17 +1,21 @@
 /**
  * Robinhood → PowerWheel sync.
  *
- * Claude (or anyone) pulls data with the Robinhood connector, writes an import
- * file, and runs:
+ * Claude (or anyone) pulls data with the Robinhood connector, puts the raw tool
+ * responses in an import file (or points at the files the tools saved), and runs:
  *
- *   npm run sync -- status              # what's synced, what needs settling
+ *   npm run sync -- status              # accounts, `since` date for the pull, what needs settling
  *   npm run sync -- import <file.json>  # import it
+ *
+ * All interpretation (P&L row classification, expiration vs assignment, snapshots)
+ * happens here, not in the prompt.
  *
  * Everything for an account is replayed in time order (orders, called-away shares,
  * share sales, expirations) so rolls, assignments and share lots line up.
  * Idempotent: every event carries a broker_ref, so re-importing is a no-op.
  * File format: see docs/SYNC.md.
  */
+import "./env";
 import { readFileSync } from "node:fs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "../src/lib/supabase";
@@ -55,12 +59,26 @@ interface PnlRow {
   price: number | string;
 }
 
+/** get_pnl_trade_history row, as returned. */
+interface RhPnlTrade extends PnlRow {
+  side: string;
+}
+
+/** Tool responses may be passed whole ({ data: {...}, guide }) or unwrapped. */
+type Raw<T> = T | { data: T };
+
 interface AccountInput {
   account_ref: string;
-  /** raw orders from get_option_orders */
-  orders?: RhOrder[];
-  /** paths to saved get_option_orders results ({ data: { orders } }) */
+  /** get_option_orders response(s) or their orders[] */
+  orders?: Raw<{ orders: RhOrder[] }> | RhOrder[];
+  /** paths to saved get_option_orders results */
   order_files?: string[];
+  /** get_pnl_trade_history response, unchanged; classified into the lists below */
+  pnl?: Raw<{ span?: string; trades: RhPnlTrade[] }>;
+  /** paths to saved get_pnl_trade_history results */
+  pnl_files?: string[];
+  /** get_portfolio response, unchanged; becomes today's snapshot */
+  portfolio?: Raw<RhPortfolio>;
   /** pnl rows with side "sell" and a positive price — shares sold */
   stock_sales?: PnlRow[];
   /** pnl rows at expiration with side "" and a positive price — shares called away by a CC */
@@ -95,6 +113,75 @@ interface ImportFile {
   settle?: { before: string; default: "expire" | "skip"; assigned?: AssignRule[] };
   /** stream = optional stream slug, to record capital allocated to a stream inside the account */
   snapshots?: { account_ref: string; stream?: string; as_of: string; total_value: number; cash?: number; net_deposits?: number }[];
+}
+
+interface RhPortfolio {
+  total_value: string;
+  equity_value?: string;
+  cash?: string;
+}
+
+/**
+ * Stream capital recorded from each account's portfolio on every sync:
+ * stream slug → which account and which get_portfolio field.
+ */
+const STREAM_SNAPSHOTS: Record<string, { account: string; field: keyof RhPortfolio }> = {
+  tesla: { account: "Joint", field: "equity_value" }, // the TSLA shares behind Tesla CC
+  joint: { account: "Joint", field: "cash" }, // cash securing Joint CSPs
+};
+
+const SPAN_DAYS: Record<string, number> = { day: 1, week: 7, month: 30, "3month": 90 };
+
+function unwrap<T>(raw: Raw<T>): T {
+  return raw && typeof raw === "object" && "data" in raw ? (raw as { data: T }).data : (raw as T);
+}
+
+function readJson<T>(path: string): T {
+  return JSON.parse(readFileSync(path, "utf8")) as T;
+}
+
+/**
+ * Fill expirations / call_aways / stock_sales / expirations_from from raw P&L history:
+ *   side "", price 0        → contract expired worthless
+ *   side "", price > 0      → shares called away by a covered call at expiration
+ *   side "sell", price > 0  → shares sold
+ * Everything else (option buybacks and rolls) is already covered by the orders.
+ */
+function classifyPnl(group: AccountInput) {
+  const responses = [
+    ...(group.pnl ? [unwrap(group.pnl)] : []),
+    ...(group.pnl_files ?? []).map((f) => unwrap(readJson<Raw<{ span?: string; trades: RhPnlTrade[] }>>(f))),
+  ];
+  if (!responses.length) return;
+
+  group.expirations ??= [];
+  group.call_aways ??= [];
+  group.stock_sales ??= [];
+  let from = "9999-12-31";
+  const today = etDate(new Date().toISOString());
+
+  for (const r of responses) {
+    for (const t of r.trades ?? []) {
+      const price = Number(t.price);
+      const row = { timestamp: t.timestamp, symbol: t.symbol, quantity: Number(t.quantity), price };
+      if (t.side === "" && price === 0) group.expirations.push({ date: etDate(t.timestamp), symbol: t.symbol, quantity: row.quantity });
+      else if (t.side === "" && price > 0) group.call_aways.push(row);
+      else if (t.side === "sell" && price > 0) group.stock_sales.push(row);
+    }
+    // P&L rows are authoritative for expirations inside the window the response covers
+    const days = SPAN_DAYS[r.span ?? ""];
+    const start = days
+      ? addDays(today, -days)
+      : (r.trades ?? []).map((t) => etDate(t.timestamp)).sort()[0] ?? today;
+    if (start < from) from = start;
+  }
+  group.expirations_from ??= from;
+}
+
+function addDays(date: string, days: number) {
+  const d = new Date(`${date}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +512,11 @@ type Item =
 
 async function importFile(path: string) {
   const db = createAdminClient();
-  const file = JSON.parse(readFileSync(path, "utf8")) as ImportFile;
+  const file = readJson<ImportFile>(path);
+  const today = etDate(new Date().toISOString());
+  // default: settle anything that expired before today, using the P&L rows when present
+  file.settle ??= { before: today, default: "skip" };
+  file.snapshots ??= [];
 
   const { data: accts, error } = await db.from("accounts").select("id, name, broker_account_ref");
   if (error) throw new Error(error.message);
@@ -439,10 +530,19 @@ async function importFile(path: string) {
 
   for (const group of file.accounts ?? []) {
     const a = acct(group.account_ref);
-    const orders = [...(group.orders ?? [])];
-    for (const f of group.order_files ?? []) {
-      const j = JSON.parse(readFileSync(f, "utf8"));
-      orders.push(...(j.data?.orders ?? j.orders ?? []));
+    const ordersOf = (raw: unknown): RhOrder[] =>
+      Array.isArray(raw) ? raw : (unwrap(raw as Raw<{ orders: RhOrder[] }>)?.orders ?? []);
+    const orders = [...ordersOf(group.orders ?? []), ...(group.order_files ?? []).flatMap((f) => ordersOf(readJson(f)))];
+    classifyPnl(group);
+
+    if (group.portfolio) {
+      const p = unwrap(group.portfolio);
+      file.snapshots.push({ account_ref: group.account_ref, as_of: today, total_value: Number(p.total_value), cash: p.cash ? Number(p.cash) : undefined });
+      for (const [slug, s] of Object.entries(STREAM_SNAPSHOTS)) {
+        if (s.account === a.name && p[s.field] !== undefined) {
+          file.snapshots.push({ account_ref: group.account_ref, stream: slug, as_of: today, total_value: Number(p[s.field]) });
+        }
+      }
     }
     const items: Item[] = [
       ...orders.map((o) => ({ at: o.created_at, kind: "order" as const, order: o })),
@@ -538,8 +638,10 @@ async function status() {
       .order("as_of", { ascending: false })
       .limit(1)
       .maybeSingle();
+    // pull from a few days before the last synced event; overlap is skipped on import
+    const since = last?.occurred_at ? addDays(etDate(last.occurred_at), -3) : "2025-10-01";
     console.log(
-      `${a.name.padEnd(12)} account_ref=${a.broker_account_ref ?? "(not set!)"}  last synced event=${last?.occurred_at ?? "never"}  last snapshot=${snap?.as_of ?? "never"}`,
+      `${a.name.padEnd(12)} account_ref=${a.broker_account_ref ?? "(not set!)"}  since=${since}  last synced event=${last?.occurred_at ?? "never"}  last snapshot=${snap?.as_of ?? "never"}`,
     );
   }
 

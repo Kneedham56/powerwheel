@@ -1,112 +1,90 @@
 # Robinhood sync playbook
 
-These are the steps for the weekly scheduled Claude run, or a manual one. Work from the repo root (`E:\Powerwheel`).
+Steps for a scheduled or manual sync. Run everything from the repo root.
 
 **Use only read tools on the Robinhood connector. Never place, cancel or replace orders.**
 
-Accounts tracked:
+All the logic lives in `scripts/sync.ts`. Your job is to fetch four things per account, save them, and run one command.
 
-| PowerWheel account | Robinhood `account_ref` |
-|---|---|
-| Individual | shown by `npm run sync -- status` |
-| Joint | shown by `npm run sync -- status` |
-
-The Roth IRA and the "Agentic" account are **not** tracked.
-
-## 1. Check state
+## 1. Setup and status
 
 ```bash
+npm ci            # only if node_modules is missing (cloud sessions)
 npm run sync -- status
 ```
 
-This prints three things:
-- the last synced event and last snapshot per account
-- any open options past expiration (the import below settles these)
-- account refs (use these as `account_number` in the connector calls)
+For each tracked account, `status` prints its `account_ref` and a `since` date. Only Individual and Joint are tracked. Ignore the Roth IRA and the "Agentic" account.
 
-Set **SINCE** to the date of the last synced event minus 3 days. Overlap is fine; re-imported items are skipped.
+## 2. Fetch (for each account)
 
-## 2. Pull from Robinhood (for each account)
+| Call | Arguments |
+|---|---|
+| `get_option_orders` | `account_number=<account_ref>`, `state="filled"`, `created_at_gte=<since>`. Follow `next` cursors until empty. |
+| `get_pnl_trade_history` | `account_number=<account_ref>`, `span="month"` |
+| `get_portfolio` | `account_number=<account_ref>` |
 
-1. `get_option_orders(account_number, state="filled", created_at_gte=SINCE)`
-   - Follow `next` cursors until the list is exhausted.
-   - If a result gets saved to a file (large results do), put that file path in `order_files`.
-   - Otherwise paste the `orders` array into `orders`, unchanged.
-2. `get_pnl_trade_history(account_number, span="month")`. Use `3month` if SINCE is more than 30 days ago. From its rows, fill three lists:
-   - `side == ""` and `price == "0"` → **`expirations`**: `{ "date": <ET date of timestamp>, "symbol", "quantity": <number> }`
-   - `side == ""` and `price > 0` with a whole-hundred quantity at 4 pm ET on an expiration day → **`call_aways`**: `{ "timestamp", "symbol", "quantity", "price" }` (shares called away by a covered call)
-   - `side == "sell"` and `price > 0` → **`stock_sales`**: `{ "timestamp", "symbol", "quantity", "price" }`
-   - Ignore everything else. Rows with `side "buy"`, or `side ""` with a negative price, are option closes and rolls, which the orders already cover.
-3. Set `expirations_from` to the first day covered by that P&L span, e.g. 30 days ago for `month`.
-
-   For an option expiring on or after that date that's still open at expiry:
-   - if a P&L expiration row covers it, the script marks it **expired**
-   - if not, it marks it **assigned** (a put opens a share lot at the strike; a call sells shares)
-4. `get_portfolio(account_number)` gives an account snapshot: `total_value` and `cash`.
-   - **Joint only:** also add two stream snapshots.
-     - `"stream": "tesla"`: `total_value` = the TSLA share value (`equity_value`, as long as TSLA is the only stock in Joint)
-     - `"stream": "joint"`: `total_value` = `cash` (the capital securing Joint CSPs)
-   - If you know of deposits or withdrawals since the last snapshot, put the net amount in `net_deposits`.
-
-## 3. Write the import file and run it
-
-Save to `sync/inbox/<YYYY-MM-DD>.json` (git-ignored):
+## 3. Write `sync/inbox/<today>.json`
 
 ```json
 {
   "accounts": [
     {
-      "account_ref": "<individual ref>",
+      "account_ref": "<ref>",
       "order_files": [],
       "orders": [],
-      "expirations_from": "2026-08-28",
-      "expirations": [{ "date": "2026-09-25", "symbol": "ASTS", "quantity": 8 }],
-      "call_aways": [],
-      "stock_sales": [{ "timestamp": "2026-08-31T14:12:05Z", "symbol": "IREN", "quantity": 600, "price": 35.79 }]
-    },
-    { "account_ref": "<joint ref>", "orders": [], "expirations_from": "2026-08-28", "expirations": [], "call_aways": [], "stock_sales": [] }
-  ],
-  "settle": { "before": "<today YYYY-MM-DD>", "default": "skip" },
-  "snapshots": [
-    { "account_ref": "<individual ref>", "as_of": "<today>", "total_value": 0, "cash": 0 },
-    { "account_ref": "<joint ref>", "as_of": "<today>", "total_value": 0, "cash": 0 },
-    { "account_ref": "<joint ref>", "stream": "tesla", "as_of": "<today>", "total_value": 0 },
-    { "account_ref": "<joint ref>", "stream": "joint", "as_of": "<today>", "total_value": 0 }
+      "pnl": {},
+      "portfolio": {}
+    }
   ]
 }
 ```
 
+- **`orders`:** if a tool result was saved to a file (large results are), list that path in `order_files` and don't copy it. Otherwise put the orders in `orders`. To save tokens, copy only these fields; the script ignores the rest:
+  - order: `id`, `chain_symbol`, `state`, `created_at`, `legs`
+  - leg: `id`, `option_id`, `side`, `position_effect`, `expiration_date`, `strike_price`, `option_type`, `executions`
+  - execution: `price`, `quantity`, `timestamp`
+- **`pnl` and `portfolio`:** paste the responses unchanged. If a response was saved to a file, use `pnl_files: ["<path>"]` instead.
+
+Don't interpret anything. The script does that:
+- It sorts P&L rows into expirations, called-away shares and share sales.
+- It settles expirations vs assignments.
+- It records the account snapshot, plus the Tesla CC and Joint Wheel stream values for Joint.
+
+## 4. Import and verify
+
 ```bash
-npm run sync -- import sync/inbox/<YYYY-MM-DD>.json
+npm run sync -- import sync/inbox/<today>.json
 npm run sync -- status
 ```
 
-## 4. Check the result, then report back
+`status` should show **0** open options past expiration.
 
-- `status` should list **no** open options past expiration, except ones expiring today that Robinhood hasn't settled yet.
-- Open options in PowerWheel should match `get_option_positions(account_number, nonzero=true)`.
-- Summarise what was imported, and list **every warning** from the script.
-  - "No open position to close" means an order closed something that isn't in the database.
-  - "Sold N sh but only M were tracked wheel shares" is normal when you sell shares you owned before wheeling them.
+## 5. Report
 
-## How things map
+Give a short summary: trades imported per account, snapshot values, and **every warning, word for word**. Keep it brief.
+
+If the import fails, report the error and stop. Don't retry with different data, and don't edit code.
+
+## Reference
+
+How Robinhood data maps (implemented in `scripts/sync.ts`):
 
 | Robinhood | PowerWheel |
 |---|---|
-| order leg `sell` + `open` | new position (CSP for puts, CC for calls) + `sell_to_open` |
-| order leg `buy` + `close` | `buy_to_close` on the oldest open lot(s) of that contract |
-| one order with both close and open legs | **roll**: legs share `roll_group_id`; the new position joins the old chain |
-| P&L row, price 0 | contract expired worthless |
-| still open after expiry, no expiry row | assigned (put → share lot at strike; call → shares sold at strike) |
-| P&L share sale | closes wheel share lots, oldest first |
+| order leg `sell` + `open` | new position (CSP for puts, CC for calls) |
+| order leg `buy` + `close` | buyback on the oldest open lot(s) of that contract |
+| one order with close and open legs | **roll**: both legs join the same trade chain |
+| P&L row: blank side, price 0 | expired worthless |
+| still open after expiry, no such row | assigned (put → share lot at strike; call → shares sold) |
+| P&L row: blank side, price > 0 | shares called away by a covered call |
+| P&L row: side `sell`, price > 0 | shares sold; closes wheel share lots, oldest first |
 
-New positions are sorted into streams by the rules on the Settings page. For example, Joint + TSLA calls/shares go to Tesla CC.
+Imports are idempotent: every event stores a broker reference, so overlapping pulls are skipped. Positions go to streams by the rules in Settings. Stream snapshots are configured in `STREAM_SNAPSHOTS` in `scripts/sync.ts`.
 
 ## Backfill notes (2026-09-27)
 
-- **What was imported:** the full history from Oct 2025 (Individual) and Nov 2025 (Joint), from `sync/inbox/backfill/`.
-  - Individual expirations before 2025-11-03 were settled using the "Assigned?" column in Kyle's sheet.
-  - Everything after that was settled from the Robinhood P&L history.
-- **Check against Robinhood:** weekly realized option P&L matches `get_realized_pnl` to the dollar for Joint.
-  - Individual is within $152 for the whole year. Most of that is a small LDI long option and an OPEN corporate-action adjustment.
-- **Share P&L is approximate for shares owned before wheeling** (e.g. PLTR, NFE). Only shares that came from assignments are tracked.
+- **What was imported:** full history from Oct 2025 (Individual) and Nov 2025 (Joint).
+  - Individual expirations before 2025-11-03 were settled from the "Assigned?" column in Kyle's sheet.
+  - Everything later was settled from Robinhood's P&L history.
+- **Check against Robinhood:** weekly realized option P&L matches `get_realized_pnl` to the dollar for Joint, and within $152 for the year for Individual.
+- **Share P&L** is approximate for shares owned before wheeling. Only assignment-created share lots are tracked.
