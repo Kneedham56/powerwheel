@@ -1,8 +1,19 @@
 import type { ReactNode } from "react";
-import { Chips, Flash, PageTitle, Stat, StatusPill, StreamDot, ToggleChips, multiParam, param } from "@/components/ui";
+import {
+  Chips,
+  Flash,
+  OptionTypePill,
+  PageTitle,
+  Stat,
+  StatusPill,
+  StreamDot,
+  ToggleChips,
+  multiParam,
+  param,
+} from "@/components/ui";
 import { WeeklyChart, type WeeklyPoint } from "@/components/WeeklyChart";
 import { loadAll } from "@/lib/db";
-import { ACTION_LABEL, contractLabel, money, num, pct, shortDate, signClass } from "@/lib/format";
+import { ACTION_LABEL, money, num, pct, shortDate, signClass } from "@/lib/format";
 import {
   chainsByGroup,
   etDate,
@@ -288,7 +299,9 @@ function GroupTable({
 interface BreakdownRow {
   key: string;
   date: string;
-  contract: string;
+  ticker: string;
+  strike: string; // "40", or "375 → 385" for a roll
+  optionType: "put" | "call" | null;
   action: string;
   stream_id: string;
   stream_name: string;
@@ -309,7 +322,9 @@ function breakdownRows(txns: TransactionRow[], posStatus: Map<string, string>): 
       rows.push({
         key: t.id,
         date: t.occurred_at,
-        contract: contractLabel(t),
+        ticker: t.ticker,
+        strike: num(t.strike),
+        optionType: t.option_type,
         action: ACTION_LABEL[t.action] ?? t.action,
         stream_id: t.stream_id,
         stream_name: t.stream_name,
@@ -324,11 +339,13 @@ function breakdownRows(txns: TransactionRow[], posStatus: Map<string, string>): 
     const opens = legs.filter((l) => l.action === "sell_to_open" || l.action === "buy_to_open");
     const qty = opens.reduce((s, l) => s + Number(l.quantity), 0) || closes.reduce((s, l) => s + Number(l.quantity), 0);
     const amount = legs.reduce((s, l) => s + Number(l.amount), 0);
-    const label = (ls: TransactionRow[]) => [...new Set(ls.map((l) => contractLabel(l)))].join(" + ");
+    const strikes = (ls: TransactionRow[]) => [...new Set(ls.map((l) => num(l.strike)))].join(" + ");
     rows.push({
       key: id,
       date: legs.map((l) => l.occurred_at).sort()[0],
-      contract: opens.length && closes.length ? `${label(closes)} → ${label(opens)}` : label(legs),
+      ticker: legs[0].ticker,
+      strike: opens.length && closes.length ? `${strikes(closes)} → ${strikes(opens)}` : strikes(legs),
+      optionType: (opens[0] ?? legs[0]).option_type,
       action: opens.length && closes.length ? (amount >= 0 ? "Roll (credit)" : "Roll (debit)") : "Roll (partial)",
       stream_id: legs[0].stream_id,
       stream_name: legs[0].stream_name,
@@ -373,7 +390,9 @@ function WeekBreakdown({
         <thead>
           <tr>
             <th>Date</th>
-            <th>Contract</th>
+            <th>Ticker</th>
+            <th>Strike</th>
+            <th>Type</th>
             <th>Action</th>
             <th>Stream</th>
             <th>Qty</th>
@@ -386,7 +405,9 @@ function WeekBreakdown({
           {rows.map((r) => (
             <tr key={r.key}>
               <td>{shortDate(r.date)}</td>
-              <td className="!whitespace-normal">{r.contract}</td>
+              <td className="font-medium">{r.ticker}</td>
+              <td>{r.strike}</td>
+              <td>{r.optionType && <OptionTypePill type={r.optionType} />}</td>
               <td>{r.action}</td>
               <td>
                 <StreamDot color={streamColor.get(r.stream_id)} />

@@ -160,6 +160,21 @@ export function StatusPill({ status, label }: { status: string; label?: string }
   return <span className={`pill ${STATUS_STYLE[status] ?? ""}`}>{label ?? status}</span>;
 }
 
+/** Put/Call tag: outlined (unlike the filled outcome pills) and colour-coded, away from gain/loss green/red. */
+export function OptionTypePill({ type }: { type: "put" | "call" }) {
+  return (
+    <span
+      className={`pill ${
+        type === "put"
+          ? "border border-fuchsia-500/60 text-fuchsia-600 dark:text-fuchsia-300"
+          : "border border-sky-500/60 text-sky-600 dark:text-sky-300"
+      }`}
+    >
+      {type === "put" ? "Put" : "Call"}
+    </span>
+  );
+}
+
 export function StreamDot({ color }: { color?: string | null }) {
   return <span className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: color ?? "#888" }} />;
 }
