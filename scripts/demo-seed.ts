@@ -133,7 +133,8 @@ async function main() {
   const premiumToDate = { Individual: 0, Joint: 0 };
   let n = 0;
 
-  for (let w = 0; w < WEEKS; w++) {
+  // one extra iteration: the final Monday's trades are opened and left open ("this week")
+  for (let w = 0; w <= WEEKS; w++) {
     const monday = addDays(START, w * 7);
     const friday = addDays(monday, 4);
     const puts: OpenPut[] = [];
@@ -202,6 +203,8 @@ async function main() {
       n++;
     }
 
+    if (w === WEEKS) break;
+
     // --- the week happens
     for (const t of UNIVERSE) {
       const p = price.get(t.symbol)!;
@@ -217,6 +220,11 @@ async function main() {
       const p = price.get(put.t.symbol)!;
       if (p > put.strike * 1.08 && chance(0.25)) {
         await closeTrade(db, { positionId: put.id, price: round(put.premium * 0.2, 0.05) || 0.05, date: wed });
+        puts.splice(puts.indexOf(put), 1);
+        n++;
+      } else if (p < put.strike * 0.93 && chance(0.3)) {
+        // cut a loser: buy back at a loss rather than risk assignment
+        await closeTrade(db, { positionId: put.id, price: round(put.strike - p + put.premium * 0.3, 0.05), date: wed });
         puts.splice(puts.indexOf(put), 1);
         n++;
       } else if (p < put.strike && chance(0.35)) {
@@ -329,7 +337,7 @@ async function main() {
 
     process.stdout.write(`\rweek ${w + 1}/${WEEKS} (${friday}) · ${n} events`);
   }
-  console.log("\nDemo data ready.");
+  console.log(`\nDemo data ready (last week left open, expiring ${addDays(START, WEEKS * 7 + 4)}).`);
 }
 
 main().catch((e) => {
