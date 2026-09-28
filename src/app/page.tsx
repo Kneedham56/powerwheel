@@ -1,18 +1,21 @@
+import type { ReactNode } from "react";
 import { Chips, Flash, PageTitle, Stat, StatusPill, StreamDot, param } from "@/components/ui";
 import { WeeklyChart, type WeeklyPoint } from "@/components/WeeklyChart";
 import { loadAll } from "@/lib/db";
-import { money, pct, shortDate, signClass } from "@/lib/format";
+import { ACTION_LABEL, contractLabel, money, num, pct, shortDate, signClass } from "@/lib/format";
 import {
-  buildChains,
+  chainsByGroup,
   etDate,
   groupChains,
   resolvePeriod,
-  scopePositions,
   summarize,
   todayEt,
+  weekTransactions,
   weekly,
+  type Chain,
   type GroupRow,
 } from "@/lib/reports";
+import type { TransactionRow } from "@/lib/types";
 
 export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const sp = await searchParams;
@@ -22,6 +25,9 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const scope = { streamId: param(sp, "stream"), accountId: param(sp, "account") };
   const s = summarize(positions, transactions, snapshots, period, scope);
   const weeks = weekly(transactions, snapshots, period, scope);
+  const weekTxns = weekTransactions(transactions, period, scope);
+  const tickerChains = chainsByGroup(positions, period, scope, "ticker");
+  const streamColor = new Map(streams.map((st) => [st.id, st.color]));
 
   const years = [...new Set(transactions.map((t) => etDate(t.occurred_at).slice(0, 4)))].sort().reverse();
   const periodOptions = [
@@ -35,10 +41,6 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
 
   const chartStreams = streams.map((st) => ({ name: st.name, color: st.color ?? "#888" }));
   const chartData: WeeklyPoint[] = weeks.map((w) => ({ week: w.week, cumulative: w.cumulative, ...w.byStream }));
-  const recent = buildChains(scopePositions(positions, scope))
-    .filter((c) => c.closed && (!period.from || c.closed >= period.from) && c.closed <= period.to)
-    .sort((a, b) => (b.closed ?? "").localeCompare(a.closed ?? ""))
-    .slice(0, 15);
 
   const empty = positions.length === 0;
 
@@ -143,111 +145,233 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
         <GroupTable title="By stream" rows={groupChains(positions, period, scope, "stream", streams)} dot />
         <GroupTable title="By strategy" rows={groupChains(positions, period, scope, "strategy")} />
       </div>
-      <GroupTable title="By ticker" rows={groupChains(positions, period, scope, "ticker")} />
 
       <section className="card overflow-x-auto">
-        <h2 className="mb-2 font-medium">Weekly detail</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Week of</th>
-              <th className="num">Net premium</th>
-              <th className="num">Account value</th>
-              <th className="num">Weekly return</th>
-              <th className="num">Cumulative</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[...weeks].reverse().map((w) => (
-              <tr key={w.week}>
-                <td>{shortDate(w.week)}</td>
-                <td className={`num ${signClass(w.net)}`}>{money(w.net)}</td>
-                <td className="num">{money(w.capital, true)}</td>
-                <td className="num">{pct(w.returnPct, 2)}</td>
-                <td className="num">{money(w.cumulative, true)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="font-medium">Weekly detail</h2>
+          <span className="text-xs text-muted">click a week to see what made it up</span>
+        </div>
+        <div className="gtable">
+          <div className={`ghead ${WEEK_COLS}`}>
+            <span>Week of</span>
+            <span>Net premium</span>
+            <span>Account value</span>
+            <span>Weekly return</span>
+            <span>Cumulative</span>
+          </div>
+          {[...weeks].reverse().map((w) => (
+            <Expandable
+              key={w.week}
+              cols={WEEK_COLS}
+              cells={[
+                shortDate(w.week),
+                <span key="n" className={signClass(w.net)}>
+                  {money(w.net)}
+                </span>,
+                money(w.capital, true),
+                pct(w.returnPct, 2),
+                money(w.cumulative, true),
+              ]}
+            >
+              <WeekBreakdown txns={weekTxns.get(w.week) ?? []} streamColor={streamColor} />
+            </Expandable>
+          ))}
+        </div>
       </section>
 
-      <section className="card overflow-x-auto">
-        <h2 className="mb-2 font-medium">Recently closed</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Closed</th>
-              <th>Trade</th>
-              <th>Stream</th>
-              <th>Outcome</th>
-              <th className="num">Rolls</th>
-              <th className="num">Net</th>
-              <th className="num">Return</th>
-            </tr>
-          </thead>
-          <tbody>
-            {recent.map((c) => (
-              <tr key={c.id}>
-                <td>{shortDate(c.closed)}</td>
-                <td>
-                  {c.ticker} {c.strategy}
-                </td>
-                <td>{c.stream_name}</td>
-                <td>
-                  <StatusPill status={c.outcome} />
-                </td>
-                <td className="num">{c.rolls || ""}</td>
-                <td className={`num ${signClass(c.net)}`}>{money(c.net)}</td>
-                <td className="num">{c.collateral ? pct(c.net / c.collateral, 2) : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+      <GroupTable
+        title="By ticker"
+        hint="click a ticker to see its trades"
+        rows={groupChains(positions, period, scope, "ticker")}
+        detail={(key) => <ChainList chains={tickerChains.get(key) ?? []} />}
+      />
+
+      {/*
+        Recently closed trades, hidden for now. To bring it back, restore this section:
+        a table of buildChains(scopePositions(positions, scope)) closed in the period,
+        newest first, showing closed date, ticker/strategy, stream, outcome, rolls, net, return.
+      */}
     </div>
   );
 }
 
-function GroupTable({ title, rows, dot }: { title: string; rows: GroupRow[]; dot?: boolean }) {
+// ---------------------------------------------------------------------------
+
+const WEEK_COLS = "grid-cols-[1.2rem_minmax(7rem,1fr)_repeat(4,minmax(6rem,1fr))]";
+const GROUP_COLS = "grid-cols-[1.2rem_minmax(7rem,1.3fr)_repeat(6,minmax(5rem,1fr))]";
+
+/** A grid row that expands to show `children` when clicked (or a plain row without children). */
+function Expandable({ cols, cells, children }: { cols: string; cells: ReactNode[]; children?: ReactNode }) {
+  const row = (
+    <>
+      <span className="text-muted transition-transform group-open:rotate-90">{children ? "▸" : ""}</span>
+      {cells.map((c, i) => (
+        <span key={i} className={i === 0 ? "text-left font-medium" : undefined}>
+          {c}
+        </span>
+      ))}
+    </>
+  );
+  if (!children) return <div className={`grow ${cols}`}>{row}</div>;
+  return (
+    <details className="group">
+      <summary className={`grow ${cols}`}>{row}</summary>
+      <div className="drill">{children}</div>
+    </details>
+  );
+}
+
+function GroupTable({
+  title,
+  hint,
+  rows,
+  dot,
+  detail,
+}: {
+  title: string;
+  hint?: string;
+  rows: GroupRow[];
+  dot?: boolean;
+  detail?: (key: string) => ReactNode;
+}) {
   return (
     <section className="card overflow-x-auto">
-      <h2 className="mb-2 font-medium">{title}</h2>
-      <table className="table">
+      <div className="mb-2 flex items-baseline justify-between">
+        <h2 className="font-medium">{title}</h2>
+        {hint && <span className="text-xs text-muted">{hint}</span>}
+      </div>
+      <div className="gtable">
+        <div className={`ghead ${GROUP_COLS}`}>
+          <span />
+          <span />
+          <span>Trades</span>
+          <span>Win rate</span>
+          <span>Assigned</span>
+          <span>Rolls</span>
+          <span>Avg return</span>
+          <span>Net P&L</span>
+        </div>
+        {rows.map((r) => (
+          <Expandable
+            key={r.key}
+            cols={GROUP_COLS}
+            cells={[
+              <>
+                {dot && <StreamDot color={r.color} />}
+                {r.label}
+              </>,
+              r.chains,
+              pct(r.winRate),
+              r.assigned,
+              r.rolls,
+              pct(r.avgReturnOnCollateral, 2),
+              <span key="n" className={signClass(r.net)}>
+                {money(r.net)}
+              </span>,
+            ]}
+          >
+            {detail?.(r.key)}
+          </Expandable>
+        ))}
+        {!rows.length && <div className="px-2 py-3 text-sm text-muted">Nothing closed in this period</div>}
+      </div>
+    </section>
+  );
+}
+
+/** What made up a week: every option trade that moved cash, biggest impact first. */
+function WeekBreakdown({ txns, streamColor }: { txns: TransactionRow[]; streamColor: Map<string, string | null> }) {
+  if (!txns.length) return <p className="text-xs text-muted">No option cash flow this week.</p>;
+  const byTicker = new Map<string, number>();
+  for (const t of txns) byTicker.set(t.ticker, (byTicker.get(t.ticker) ?? 0) + Number(t.amount));
+  const tickers = [...byTicker.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const sorted = [...txns].sort((a, b) => Math.abs(Number(b.amount)) - Math.abs(Number(a.amount)));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+        <span className="text-muted">By ticker:</span>
+        {tickers.map(([t, v]) => (
+          <span key={t}>
+            {t} <span className={signClass(v)}>{money(v, true)}</span>
+          </span>
+        ))}
+      </div>
+      <table>
         <thead>
           <tr>
-            <th></th>
-            <th className="num">Trades</th>
-            <th className="num">Win rate</th>
-            <th className="num">Assigned</th>
-            <th className="num">Rolls</th>
-            <th className="num">Avg return</th>
-            <th className="num">Net P&L</th>
+            <th>Date</th>
+            <th>Contract</th>
+            <th>Action</th>
+            <th>Stream</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>Cash</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.key}>
-              <td className="font-medium">
-                {dot && <StreamDot color={r.color} />}
-                {r.label}
+          {sorted.map((t) => (
+            <tr key={t.id}>
+              <td>{shortDate(t.occurred_at)}</td>
+              <td>{contractLabel(t)}</td>
+              <td>
+                {ACTION_LABEL[t.action] ?? t.action}
+                {t.roll_group_id && <span className="ml-1 text-muted">(roll)</span>}
               </td>
-              <td className="num">{r.chains}</td>
-              <td className="num">{pct(r.winRate)}</td>
-              <td className="num">{r.assigned}</td>
-              <td className="num">{r.rolls}</td>
-              <td className="num">{pct(r.avgReturnOnCollateral, 2)}</td>
-              <td className={`num ${signClass(r.net)}`}>{money(r.net)}</td>
+              <td>
+                <StreamDot color={streamColor.get(t.stream_id)} />
+                {t.stream_name}
+              </td>
+              <td>{num(t.quantity)}</td>
+              <td>{money(t.price)}</td>
+              <td className={signClass(Number(t.amount))}>{money(Number(t.amount))}</td>
             </tr>
           ))}
-          {!rows.length && (
-            <tr>
-              <td colSpan={7} className="text-muted">
-                Nothing closed in this period
-              </td>
-            </tr>
-          )}
         </tbody>
       </table>
-    </section>
+    </div>
+  );
+}
+
+/** The trades (roll chains) behind a ticker row. */
+function ChainList({ chains }: { chains: Chain[] }) {
+  if (!chains.length) return <p className="text-xs text-muted">No closed trades in this period.</p>;
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>Opened</th>
+          <th>Closed</th>
+          <th>Type</th>
+          <th>Contracts</th>
+          <th>Account</th>
+          <th>Outcome</th>
+          <th>Rolls</th>
+          <th>Net</th>
+          <th>Return</th>
+        </tr>
+      </thead>
+      <tbody>
+        {chains.map((c) => (
+          <tr key={c.id}>
+            <td>{shortDate(c.opened)}</td>
+            <td>{shortDate(c.closed)}</td>
+            <td>{c.strategy}</td>
+            <td className="!text-left">
+              {c.legs
+                .map((l) => `${num(l.strike)}${l.option_type === "put" ? "P" : "C"} ${shortDate(l.expiration)} ×${num(l.quantity)}`)
+                .join(" → ")}
+            </td>
+            <td>{c.account_name}</td>
+            <td>
+              <StatusPill status={c.outcome} />
+            </td>
+            <td>{c.rolls || ""}</td>
+            <td className={signClass(c.net)}>{money(c.net)}</td>
+            <td>{c.collateral ? pct(c.net / c.collateral, 2) : "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

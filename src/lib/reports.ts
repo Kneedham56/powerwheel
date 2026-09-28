@@ -362,6 +362,37 @@ export function weekly(txns: TransactionRow[], snapshots: Snapshot[], period: Pe
     });
 }
 
+/** The option transactions behind each week's net premium (same filter as `weekly`), newest first. */
+export function weekTransactions(txns: TransactionRow[], period: Period, scope: Scope): Map<string, TransactionRow[]> {
+  const out = new Map<string, TransactionRow[]>();
+  for (const t of scopeTransactions(txns, scope)) {
+    const d = etDate(t.occurred_at);
+    if (t.instrument !== "option" || !inPeriod(d, period) || Number(t.amount) === 0) continue;
+    const w = weekStart(d);
+    out.set(w, [...(out.get(w) ?? []), t]);
+  }
+  for (const list of out.values()) list.sort((a, b) => b.occurred_at.localeCompare(a.occurred_at));
+  return out;
+}
+
+/** Closed chains in the period, grouped the same way as `groupChains`, most recent first. */
+export function chainsByGroup(
+  positions: PositionRow[],
+  period: Period,
+  scope: Scope,
+  by: "ticker" | "stream" | "account" | "strategy",
+): Map<string, Chain[]> {
+  const out = new Map<string, Chain[]>();
+  for (const c of buildChains(scopePositions(positions, scope))) {
+    if (!inPeriod(c.closed, period)) continue;
+    const key =
+      by === "ticker" ? c.ticker : by === "stream" ? c.stream_id : by === "account" ? c.account_id : c.strategy;
+    out.set(key, [...(out.get(key) ?? []), c]);
+  }
+  for (const list of out.values()) list.sort((a, b) => (b.closed ?? "").localeCompare(a.closed ?? ""));
+  return out;
+}
+
 export interface GroupRow {
   key: string;
   label: string;

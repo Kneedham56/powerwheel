@@ -32,3 +32,14 @@ export function contractLabel(p: { ticker: string; strike: number | null; option
   if (p.instrument === "stock") return `${p.ticker} shares`;
   return `${p.ticker} ${num(p.strike)}${p.option_type === "put" ? "P" : "C"} ${shortDate(p.expiration)}`;
 }
+
+export const ACTION_LABEL: Record<string, string> = {
+  sell_to_open: "Sell to open",
+  buy_to_close: "Buy to close",
+  buy_to_open: "Buy to open",
+  sell_to_close: "Sell to close",
+  expire: "Expired",
+  assign: "Assigned",
+  buy: "Buy shares",
+  sell: "Sell shares",
+};
