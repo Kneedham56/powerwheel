@@ -21,7 +21,12 @@ export async function selectAll<T>(
 ): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += pageSize) {
-    const { data, error } = await build(from, from + pageSize - 1);
+    let { data, error } = await build(from, from + pageSize - 1);
+    // Supabase's gateway occasionally mints a token a moment ahead of the database clock
+    for (let attempt = 1; error && /JWT issued at future/i.test(error.message) && attempt <= 3; attempt++) {
+      await new Promise((r) => setTimeout(r, 500 * attempt));
+      ({ data, error } = await build(from, from + pageSize - 1));
+    }
     if (error) throw new Error(error.message);
     out.push(...(data ?? []));
     if (!data || data.length < pageSize) return out;
