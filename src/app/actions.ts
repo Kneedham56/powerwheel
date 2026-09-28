@@ -1,10 +1,13 @@
 "use server";
 
-// NOTE: no auth yet — the app is meant to run on localhost only.
-// Add Supabase Auth and check the session here before deploying anywhere public.
+// Every mutation goes through run(), which checks the session (see lib/auth.ts) and
+// refuses writes in the read-only demo. Server actions are reachable by direct POST,
+// so this check matters even though proxy.ts already gates the pages.
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { SESSION_COOKIE, isDemo, isValidSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
   assignTrade,
@@ -31,11 +34,17 @@ function optN(f: FormData, k: string): number | undefined {
   return str(f, k) ? n(f, k) : undefined;
 }
 
+async function requireWrite() {
+  if (isDemo()) throw new Error("This is a read-only demo — changes are disabled.");
+  if (!(await isValidSession((await cookies()).get(SESSION_COOKIE)?.value))) throw new Error("Please sign in again.");
+}
+
 /** Run a mutation, then send the user back with a flash message in the URL. */
 async function run(f: FormData, fallback: string, work: () => Promise<string | void>) {
   const back = str(f, "back") || fallback;
   let target: string;
   try {
+    await requireWrite();
     const msg = await work();
     revalidatePath("/", "layout");
     target = withParam(back, "ok", msg || "Saved");
