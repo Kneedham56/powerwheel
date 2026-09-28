@@ -12,6 +12,7 @@ import {
   param,
 } from "@/components/ui";
 import { WeeklyChart, type WeeklyPoint } from "@/components/WeeklyChart";
+import { isDemo } from "@/lib/auth";
 import { loadAll } from "@/lib/db";
 import { ACTION_LABEL, money, num, pct, shortDate, signClass } from "@/lib/format";
 import {
@@ -34,7 +35,9 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const sp = await searchParams;
   const { streams, positions, transactions, snapshots } = await loadAll();
 
-  const period = resolvePeriod(param(sp, "period"));
+  // the demo never updates, so it opens on All time (YTD would empty out next year)
+  const demo = isDemo();
+  const period = resolvePeriod(param(sp, "period") ?? (demo ? "all" : undefined));
   const activeStreams = streams.filter((st) => st.is_active);
   const selected = multiParam(sp, "streams", activeStreams.map((st) => st.id));
   const scope = { streamIds: selected, streamAccounts: streamAccountMap(positions) };
@@ -50,12 +53,12 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
 
   const years = [...new Set(transactions.map((t) => etDate(t.occurred_at).slice(0, 4)))].sort().reverse();
   const periodOptions = [
-    { value: "", label: "YTD" },
+    { value: demo ? "ytd" : "", label: "YTD" },
     { value: "30d", label: "30D" },
     { value: "90d", label: "90D" },
     { value: "12m", label: "12M" },
     ...years.filter((y) => y !== todayEt().slice(0, 4)).map((y) => ({ value: y, label: y })),
-    { value: "all", label: "All time" },
+    { value: demo ? "" : "all", label: "All time" },
   ];
 
   const chartStreams = (selected.length ? activeStreams.filter((st) => selected.includes(st.id)) : activeStreams).map((st) => ({ name: st.name, color: st.color ?? "#888" }));
