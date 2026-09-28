@@ -71,7 +71,7 @@ export function resolvePeriod(key: string | undefined, today = todayEt()): Perio
   }
 }
 
-function inPeriod(date: string | null, p: Period): boolean {
+export function inPeriod(date: string | null, p: Period): boolean {
   if (!date) return false;
   return (!p.from || date >= p.from) && date <= p.to;
 }
@@ -229,9 +229,13 @@ export interface Summary {
   rolledChains: number;
   totalRolls: number;
   // cash (option transactions in period)
-  premiumCollected: number;
-  buybackCost: number;
+  premiumCollected: number; // gross, both legs of rolls included
+  buybackCost: number; // gross
   netPremium: number;
+  /** netPremium, split the way rolls are thought about: new sales + roll net − plain buybacks */
+  newPremium: number;
+  rollNet: number;
+  plainBuybacks: number;
   fees: number;
   contractsSold: number;
   // capital
@@ -262,7 +266,9 @@ export function summarize(
   const closed = chains.filter((c) => inPeriod(c.closed, period));
 
   const winners = closed.filter((c) => c.net > 0 && c.outcome !== "assigned");
+  // win/loss count treats an assignment as a loss; the dollar stats use trades that lost money
   const losers = closed.filter((c) => c.net < 0 || c.outcome === "assigned");
+  const moneyLosers = closed.filter((c) => c.net < 0);
   const realizedOptions = sum(closed.map((c) => c.net));
   const realizedStock = sum(
     pos
@@ -307,11 +313,11 @@ export function summarize(
     realizedStock,
     realized,
     grossGains: sum(winners.map((c) => c.net)),
-    grossLosses: sum(losers.map((c) => c.net)),
+    grossLosses: sum(moneyLosers.map((c) => c.net)),
     avgWin: winners.length ? sum(winners.map((c) => c.net)) / winners.length : null,
-    avgLoss: losers.length ? sum(losers.map((c) => c.net)) / losers.length : null,
+    avgLoss: moneyLosers.length ? sum(moneyLosers.map((c) => c.net)) / moneyLosers.length : null,
     largestWin: winners.length ? Math.max(...winners.map((c) => c.net)) : null,
-    largestLoss: losers.length ? Math.min(...losers.map((c) => c.net)) : null,
+    largestLoss: moneyLosers.length ? Math.min(...moneyLosers.map((c) => c.net)) : null,
     expired: closed.filter((c) => c.outcome === "expired").length,
     boughtBack: closed.filter((c) => c.outcome === "closed").length,
     assigned: closed.filter((c) => c.outcome === "assigned").length,
@@ -321,6 +327,9 @@ export function summarize(
     premiumCollected,
     buybackCost,
     netPremium: premiumCollected - buybackCost,
+    newPremium: sum(optTx.filter((t) => t.action === "sell_to_open" && !t.roll_group_id).map((t) => Number(t.amount))),
+    rollNet: sum(optTx.filter((t) => t.roll_group_id).map((t) => Number(t.amount))),
+    plainBuybacks: -sum(optTx.filter((t) => t.action === "buy_to_close" && !t.roll_group_id).map((t) => Number(t.amount))),
     fees: sum(optTx.map((t) => Number(t.fees))),
     contractsSold: sum(optTx.filter((t) => t.action === "sell_to_open").map((t) => Number(t.quantity))),
     startCapital,

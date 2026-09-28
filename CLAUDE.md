@@ -21,6 +21,7 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - DB triggers own the math: `transactions.amount` (signed cash, ×100 for options, net of fees) and `positions.status` / `closed_at`.
 - `src/lib/trades.ts` — lifecycle operations, shared by the app and `scripts/sync.ts` (keep it free of Next.js imports).
 - `src/lib/reports.ts` — pure reporting functions. "Realized" = roll chains closed in the period; "cash" = option cash flow by date. New metrics go here.
+- `src/lib/cycles.ts` — wheel cycles: per account+ticker, first put assignment until assigned shares are gone; total = assigned put premium + covered-call premium while holding + share P&L vs strike.
 - `scripts/sync.ts` + `docs/SYNC.md` — Robinhood import (idempotent via leg ids in `transactions.broker_ref`).
 
 ## Conventions

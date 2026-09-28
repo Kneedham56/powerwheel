@@ -27,6 +27,7 @@ import {
   type Chain,
   type GroupRow,
 } from "@/lib/reports";
+import { buildCycles, cyclesInPeriod, summarizeCycles, type Cycle } from "@/lib/cycles";
 import type { TransactionRow } from "@/lib/types";
 
 export default async function ReportsPage({ searchParams }: PageProps<"/">) {
@@ -41,6 +42,8 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const weeks = weekly(transactions, snapshots, period, scope);
   const weekTxns = weekTransactions(transactions, period, scope);
   const tickerChains = chainsByGroup(positions, period, scope, "ticker");
+  const cycles = cyclesInPeriod(buildCycles(positions, scope), period);
+  const cy = summarizeCycles(cycles);
   const streamColor = new Map(streams.map((st) => [st.id, st.color]));
   const posStatus = new Map(positions.map((p) => [p.id, p.status]));
 
@@ -81,65 +84,77 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
         </div>
       )}
 
-      <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat
-          label="Realized P&L"
-          value={money(s.realized, true)}
-          tone={signClass(s.realized)}
-          sub={`Options ${money(s.realizedOptions, true)} · Stock ${money(s.realizedStock, true)}`}
-        />
-        <Stat
-          label="Return on capital"
-          value={pct(s.returnOnCapital, 2)}
-          tone={signClass(s.returnOnCapital)}
-          sub={
-            !s.startCapital
-              ? "Add account snapshots to see this"
-              : s.startCapitalIsProxy
-                ? `on ${money(s.startCapital, true)} (value on ${shortDate(s.startCapitalDate)}, earliest snapshot)`
-                : `on ${money(s.startCapital, true)} value at ${shortDate(s.startCapitalDate)}`
-          }
-        />
-        <Stat
-          label="Win rate"
-          value={pct(s.winRate)}
-          sub={`${s.wins}W / ${s.losses}L of ${s.chainsClosed} closed trades`}
-        />
-        <Stat
-          label="Net premium (cash)"
-          value={money(s.netPremium, true)}
-          tone={signClass(s.netPremium)}
-          sub={`${money(s.premiumCollected, true)} sold − ${money(s.buybackCost, true)} bought back`}
-        />
-        <Stat
-          label="Avg return / trade"
-          value={pct(s.avgReturnOnCollateral, 2)}
-          sub="net P&L ÷ collateral, per closed trade"
-        />
-        <Stat
-          label="Outcomes"
-          value={
-            <span className="text-base">
-              {s.expired} expired · {s.boughtBack} bought back · {s.assigned} assigned
-            </span>
-          }
-          sub={`CSP assignment rate ${pct(s.assignmentRate)} · ${s.totalRolls} rolls across ${s.rolledChains} trades`}
-        />
-        <Stat
-          label="Gains vs losses"
-          value={
-            <span className="text-base">
-              <span className="text-gain">{money(s.grossGains, true)}</span> /{" "}
-              <span className="text-loss">{money(s.grossLosses, true)}</span>
-            </span>
-          }
-          sub={`Avg win ${money(s.avgWin, true)} · avg loss ${money(s.avgLoss, true)} · worst ${money(s.largestLoss, true)}`}
-        />
-        <Stat
-          label="Open now"
-          value={`${s.openChains} trades`}
-          sub={`${money(s.openCollateral, true)} collateral · ${money(s.openPremium, true)} premium held`}
-        />
+      <section className="space-y-3">
+        <h3 className="text-xs font-medium tracking-wide text-muted uppercase">Bottom line</h3>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat
+            label="Realized P&L"
+            value={money(s.realized, true)}
+            tone={signClass(s.realized)}
+            sub={`Options ${money(s.realizedOptions, true)} · Stock ${money(s.realizedStock, true)}`}
+          />
+          <Stat
+            label="Return on capital"
+            value={pct(s.returnOnCapital, 2)}
+            tone={signClass(s.returnOnCapital)}
+            sub={
+              !s.startCapital
+                ? "Add account snapshots to see this"
+                : s.startCapitalIsProxy
+                  ? `on ${money(s.startCapital, true)} (value on ${shortDate(s.startCapitalDate)}, earliest snapshot)`
+                  : `on ${money(s.startCapital, true)} value at ${shortDate(s.startCapitalDate)}`
+            }
+          />
+          <Stat
+            label="Net premium"
+            value={money(s.netPremium, true)}
+            tone={signClass(s.netPremium)}
+            sub={`New ${money(s.newPremium, true)} + rolls ${money(s.rollNet, true)} − buybacks ${money(s.plainBuybacks, true)}`}
+          />
+          <Stat
+            label="Open now"
+            value={`${s.openChains} trades`}
+            sub={`${money(s.openCollateral, true)} collateral · ${money(s.openPremium, true)} premium held`}
+          />
+        </div>
+
+        <h3 className="pt-1 text-xs font-medium tracking-wide text-muted uppercase">Trades & wheel cycles</h3>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat
+            label="Win rate"
+            value={pct(s.winRate)}
+            sub={`${s.wins}W / ${s.losses}L · avg win ${money(s.avgWin, true)} · avg loss ${money(s.avgLoss, true)}`}
+          />
+          <Stat
+            label="Avg return / trade"
+            value={pct(s.avgReturnOnCollateral, 2)}
+            sub="net P&L ÷ collateral, per closed trade"
+          />
+          <Stat
+            label="Outcomes"
+            value={
+              <span className="text-base">
+                {s.expired} expired · {s.boughtBack} bought back · {s.assigned} assigned
+              </span>
+            }
+            sub={`CSP assignment rate ${pct(s.assignmentRate)} · ${s.totalRolls} rolls across ${s.rolledChains} trades`}
+          />
+          <Stat
+            label="Wheel cycles"
+            value={
+              <span className="text-base">
+                <span className="text-gain">{cy.green} green</span> · <span className="text-loss">{cy.red} red</span>
+                {" · "}
+                <span className={signClass(cy.closedNet)}>{money(cy.closedNet, true)}</span>
+              </span>
+            }
+            sub={
+              cy.open
+                ? `${cy.open} open, holding ${num(cy.openShares, 0)} sh (${money(cy.openCost, true)} at strike)`
+                : "no shares held from assignments"
+            }
+          />
+        </div>
       </section>
 
       <section className="card">
@@ -196,6 +211,49 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
         detail={(key) => <ChainList chains={tickerChains.get(key) ?? []} />}
       />
 
+      <section className="card overflow-x-auto">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="font-medium">Wheel cycles</h2>
+          <span className="text-xs text-muted">
+            put → assigned shares → covered calls → shares gone · click a cycle for its story
+          </span>
+        </div>
+        <div className="gtable">
+          <div className={`ghead ${CYCLE_COLS}`}>
+            <span />
+            <span className="text-left">Ticker</span>
+            <span>Account</span>
+            <span>Assigned</span>
+            <span>Done</span>
+            <span>Shares</span>
+            <span>Put prem.</span>
+            <span>Call prem.</span>
+            <span>Shares P&L</span>
+            <span>Total</span>
+          </div>
+          {cycles.map((c) => (
+            <Expandable
+              key={c.id}
+              cols={CYCLE_COLS}
+              cells={[
+                c.ticker,
+                c.account_name,
+                shortDate(c.started),
+                c.ended ? shortDate(c.ended) : <StatusPill key="o" status="open" label="holding" />,
+                num(c.sharesAssigned, 0),
+                <span key="p" className={signClass(c.putPremium)}>{money(c.putPremium, true)}</span>,
+                <span key="c" className={signClass(c.callPremium)}>{money(c.callPremium, true)}</span>,
+                <span key="s" className={signClass(c.stockPnl)}>{money(c.stockPnl, true)}</span>,
+                <span key="t" className={`font-medium ${signClass(c.total)}`}>{money(c.total, true)}</span>,
+              ]}
+            >
+              <CycleStory cycle={c} />
+            </Expandable>
+          ))}
+          {!cycles.length && <div className="px-2 py-3 text-sm text-muted">No assignments in this period</div>}
+        </div>
+      </section>
+
       {/*
         Recently closed trades, hidden for now. To bring it back, restore this section:
         a table of buildChains(scopePositions(positions, scope)) closed in the period,
@@ -208,6 +266,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
 // ---------------------------------------------------------------------------
 
 const WEEK_COLS = "grid-cols-[1rem_minmax(6.5rem,1fr)_repeat(4,minmax(4.5rem,1fr))]";
+const CYCLE_COLS = "grid-cols-[1rem_minmax(4rem,1fr)_repeat(8,minmax(4.5rem,1fr))]";
 const GROUP_COLS = "grid-cols-[1rem_minmax(6rem,1.4fr)_repeat(6,minmax(3.5rem,1fr))]";
 
 /** Monday of an expiration week → that Friday (the usual expiration day). */
@@ -417,6 +476,78 @@ function WeekBreakdown({
               <td>{money(r.price)}</td>
               <td className={signClass(r.amount)}>{money(r.amount)}</td>
               <td>{r.status && <StatusPill status={r.status} label={OUTCOME_LABEL[r.status]} />}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Everything that happened in one wheel cycle, in date order. */
+function CycleStory({ cycle: c }: { cycle: Cycle }) {
+  const strikes = (ch: Chain) =>
+    ch.legs.map((l) => `${num(l.strike)}${l.option_type === "put" ? "P" : "C"} ×${num(l.quantity)}`).join(" → ");
+  const rows = [
+    ...c.puts.map((ch) => ({
+      key: ch.id,
+      date: ch.opened,
+      type: "put" as const,
+      what: strikes(ch),
+      outcome: <StatusPill status={ch.outcome} label={OUTCOME_LABEL[ch.outcome]} />,
+      amount: ch.net,
+    })),
+    ...c.calls.map((ch) => ({
+      key: ch.id,
+      date: ch.opened,
+      type: "call" as const,
+      what: strikes(ch),
+      outcome: <StatusPill status={ch.outcome} label={OUTCOME_LABEL[ch.outcome]} />,
+      amount: ch.net,
+    })),
+    ...c.lots.map((l) => {
+      const q = Number(l.quantity);
+      const cost = q ? Number(l.debits) / q : 0;
+      const sold = q - Number(l.open_quantity);
+      const avgSale = sold ? Number(l.credits) / sold : 0;
+      return {
+        key: l.id,
+        date: etDate(l.opened_at),
+        type: null,
+        what: `${num(q, 0)} sh @ ${money(cost)}${sold ? ` → sold ${num(sold, 0)} @ ${money(avgSale)}` : ""}`,
+        outcome: <StatusPill status={l.status === "open" ? "open" : "closed"} label={l.status === "open" ? "holding" : "sold"} />,
+        amount: sold ? Number(l.credits) - cost * sold : 0,
+      };
+    }),
+  ].sort((a, b) => a.date.localeCompare(b.date));
+
+  return (
+    <div className="space-y-2">
+      {c.status === "open" && c.adjustedBasis !== null && (
+        <p className="text-xs">
+          Holding {num(c.sharesHeld, 0)} sh · cost at strike {money(c.openCost / c.sharesHeld)}/sh · premium collected{" "}
+          {money(c.putPremium + c.callPremium, true)} →{" "}
+          <span className="font-medium">adjusted basis {money(c.adjustedBasis)}/sh</span>
+        </p>
+      )}
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Leg</th>
+            <th>Contracts / shares</th>
+            <th>Outcome</th>
+            <th>P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td>{shortDate(r.date)}</td>
+              <td>{r.type ? <OptionTypePill type={r.type} /> : <span className="pill border border-border">Shares</span>}</td>
+              <td className="!text-left">{r.what}</td>
+              <td>{r.outcome}</td>
+              <td className={signClass(r.amount)}>{money(r.amount)}</td>
             </tr>
           ))}
         </tbody>
