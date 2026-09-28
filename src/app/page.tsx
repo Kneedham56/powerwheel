@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Chips, Flash, PageTitle, Stat, StatusPill, StreamDot, param } from "@/components/ui";
+import { Chips, Flash, PageTitle, Stat, StatusPill, StreamDot, ToggleChips, multiParam, param } from "@/components/ui";
 import { WeeklyChart, type WeeklyPoint } from "@/components/WeeklyChart";
 import { loadAll } from "@/lib/db";
 import { ACTION_LABEL, contractLabel, money, num, pct, shortDate, signClass } from "@/lib/format";
@@ -8,6 +8,7 @@ import {
   etDate,
   groupChains,
   resolvePeriod,
+  streamAccountMap,
   summarize,
   todayEt,
   weekTransactions,
@@ -19,10 +20,12 @@ import type { TransactionRow } from "@/lib/types";
 
 export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const sp = await searchParams;
-  const { accounts, streams, positions, transactions, snapshots } = await loadAll();
+  const { streams, positions, transactions, snapshots } = await loadAll();
 
   const period = resolvePeriod(param(sp, "period"));
-  const scope = { streamId: param(sp, "stream"), accountId: param(sp, "account") };
+  const activeStreams = streams.filter((st) => st.is_active);
+  const selected = multiParam(sp, "streams", activeStreams.map((st) => st.id));
+  const scope = { streamIds: selected, streamAccounts: streamAccountMap(positions) };
   const s = summarize(positions, transactions, snapshots, period, scope);
   const weeks = weekly(transactions, snapshots, period, scope);
   const weekTxns = weekTransactions(transactions, period, scope);
@@ -39,7 +42,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
     { value: "all", label: "All time" },
   ];
 
-  const chartStreams = streams.map((st) => ({ name: st.name, color: st.color ?? "#888" }));
+  const chartStreams = (selected.length ? activeStreams.filter((st) => selected.includes(st.id)) : activeStreams).map((st) => ({ name: st.name, color: st.color ?? "#888" }));
   const chartData: WeeklyPoint[] = weeks.map((w) => ({ week: w.week, cumulative: w.cumulative, ...w.byStream }));
 
   const empty = positions.length === 0;
@@ -51,17 +54,11 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
 
       <div className="card space-y-2">
         <Chips sp={sp} path="/" name="period" options={periodOptions} />
-        <Chips
+        <ToggleChips
           sp={sp}
           path="/"
-          name="stream"
-          options={[{ value: "", label: "All streams" }, ...streams.map((st) => ({ value: st.id, label: st.name }))]}
-        />
-        <Chips
-          sp={sp}
-          path="/"
-          name="account"
-          options={[{ value: "", label: "All accounts" }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+          name="streams"
+          options={activeStreams.map((st) => ({ value: st.id, label: st.name, color: st.color }))}
         />
       </div>
 
@@ -153,7 +150,8 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
         </div>
         <div className="gtable">
           <div className={`ghead ${WEEK_COLS}`}>
-            <span>Expiring week</span>
+            <span />
+            <span className="text-left">Expiring week</span>
             <span>Net premium</span>
             <span>Account value</span>
             <span>Weekly return</span>
