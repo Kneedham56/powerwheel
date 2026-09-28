@@ -136,7 +136,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
       <section className="card">
         <div className="mb-2 flex items-baseline justify-between">
           <h2 className="font-medium">Weekly net premium</h2>
-          <span className="text-xs text-muted">premium sold − buybacks, by week opened/closed · line = cumulative</span>
+          <span className="text-xs text-muted">premium sold − buybacks, by expiration week · line = cumulative</span>
         </div>
         <WeeklyChart data={chartData} streams={chartStreams} />
       </section>
@@ -153,7 +153,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
         </div>
         <div className="gtable">
           <div className={`ghead ${WEEK_COLS}`}>
-            <span>Week of</span>
+            <span>Expiring week</span>
             <span>Net premium</span>
             <span>Account value</span>
             <span>Weekly return</span>
@@ -164,7 +164,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
               key={w.week}
               cols={WEEK_COLS}
               cells={[
-                shortDate(w.week),
+                shortDate(fridayOf(w.week)),
                 <span key="n" className={signClass(w.net)}>
                   {money(w.net)}
                 </span>,
@@ -197,8 +197,15 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
 
 // ---------------------------------------------------------------------------
 
-const WEEK_COLS = "grid-cols-[1.2rem_minmax(7rem,1fr)_repeat(4,minmax(6rem,1fr))]";
-const GROUP_COLS = "grid-cols-[1.2rem_minmax(7rem,1.3fr)_repeat(6,minmax(5rem,1fr))]";
+const WEEK_COLS = "grid-cols-[1rem_minmax(6.5rem,1fr)_repeat(4,minmax(4.5rem,1fr))]";
+const GROUP_COLS = "grid-cols-[1rem_minmax(6rem,1.4fr)_repeat(6,minmax(3.5rem,1fr))]";
+
+/** Monday of an expiration week → that Friday (the usual expiration day). */
+function fridayOf(monday: string) {
+  const d = new Date(`${monday}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 4);
+  return d.toISOString().slice(0, 10);
+}
 
 /** A grid row that expands to show `children` when clicked (or a plain row without children). */
 function Expandable({ cols, cells, children }: { cols: string; cells: ReactNode[]; children?: ReactNode }) {
@@ -357,10 +364,14 @@ function ChainList({ chains }: { chains: Chain[] }) {
             <td>{shortDate(c.opened)}</td>
             <td>{shortDate(c.closed)}</td>
             <td>{c.strategy}</td>
-            <td className="!text-left">
-              {c.legs
-                .map((l) => `${num(l.strike)}${l.option_type === "put" ? "P" : "C"} ${shortDate(l.expiration)} ×${num(l.quantity)}`)
-                .join(" → ")}
+            <td className="min-w-[14rem] !text-left !whitespace-normal">
+              {c.legs.map((l, i) => (
+                <span key={l.id} className="inline-block whitespace-nowrap">
+                  {i > 0 && <span className="mx-1 text-muted">→</span>}
+                  {num(l.strike)}
+                  {l.option_type === "put" ? "P" : "C"} {shortDate(l.expiration)} ×{num(l.quantity)}
+                </span>
+              ))}
             </td>
             <td>{c.account_name}</td>
             <td>

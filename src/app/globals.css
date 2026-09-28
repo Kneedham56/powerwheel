@@ -72,7 +72,7 @@ body {
   }
   /* grid-based tables whose rows can expand (<details>/<summary>) */
   .gtable {
-    @apply min-w-[640px] text-sm;
+    @apply min-w-[26rem] text-sm;
   }
   .ghead {
     @apply grid items-center gap-2 border-b border-border px-2 py-2 text-center text-xs font-medium text-muted;
@@ -87,7 +87,7 @@ body {
     display: none;
   }
   .drill {
-    @apply border-b border-border bg-background/60 px-4 py-3;
+    @apply overflow-x-auto border-b border-border bg-background/60 px-4 py-3;
   }
   .drill table {
     @apply w-full text-xs;

@@ -338,14 +338,35 @@ export interface WeekRow {
   cumulative: number;
 }
 
-/** Net option cash flow per week (premium in − buybacks), split by stream. */
-export function weekly(txns: TransactionRow[], snapshots: Snapshot[], period: Period, scope: Scope): WeekRow[] {
-  const tx = scopeTransactions(txns, scope).filter(
-    (t) => t.instrument === "option" && inPeriod(etDate(t.occurred_at), period) && Number(t.amount) !== 0,
+/**
+ * Weekly views bucket option cash by the contract's EXPIRATION week, not the trade date:
+ * premium sold on Friday for next week's expiry counts toward next week, and a roll puts
+ * the buyback on the old expiry's week and the new premium on the new expiry's week.
+ */
+function expiryDate(t: TransactionRow): string {
+  return t.expiration ?? etDate(t.occurred_at);
+}
+
+/**
+ * Trades already made (trade date ≤ period end) whose expiration is on or after the period
+ * start, so upcoming expirations for positions opened today still show as future weeks.
+ */
+function weeklyOptionTxns(txns: TransactionRow[], period: Period, scope: Scope) {
+  return scopeTransactions(txns, scope).filter(
+    (t) =>
+      t.instrument === "option" &&
+      Number(t.amount) !== 0 &&
+      etDate(t.occurred_at) <= period.to &&
+      (!period.from || expiryDate(t) >= period.from),
   );
+}
+
+/** Net option cash flow per expiration week (premium in − buybacks), split by stream. */
+export function weekly(txns: TransactionRow[], snapshots: Snapshot[], period: Period, scope: Scope): WeekRow[] {
+  const tx = weeklyOptionTxns(txns, period, scope);
   const weeks = new Map<string, WeekRow>();
   for (const t of tx) {
-    const w = weekStart(etDate(t.occurred_at));
+    const w = weekStart(expiryDate(t));
     const row = weeks.get(w) ?? { week: w, byStream: {}, net: 0, capital: null, returnPct: null, cumulative: 0 };
     row.byStream[t.stream_name] = (row.byStream[t.stream_name] ?? 0) + Number(t.amount);
     row.net += Number(t.amount);
@@ -362,13 +383,11 @@ export function weekly(txns: TransactionRow[], snapshots: Snapshot[], period: Pe
     });
 }
 
-/** The option transactions behind each week's net premium (same filter as `weekly`), newest first. */
+/** The option transactions behind each week's net premium (same buckets as `weekly`), newest first. */
 export function weekTransactions(txns: TransactionRow[], period: Period, scope: Scope): Map<string, TransactionRow[]> {
   const out = new Map<string, TransactionRow[]>();
-  for (const t of scopeTransactions(txns, scope)) {
-    const d = etDate(t.occurred_at);
-    if (t.instrument !== "option" || !inPeriod(d, period) || Number(t.amount) === 0) continue;
-    const w = weekStart(d);
+  for (const t of weeklyOptionTxns(txns, period, scope)) {
+    const w = weekStart(expiryDate(t));
     out.set(w, [...(out.get(w) ?? []), t]);
   }
   for (const list of out.values()) list.sort((a, b) => b.occurred_at.localeCompare(a.occurred_at));
