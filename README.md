@@ -32,6 +32,16 @@ Open http://localhost:3000. Press Ctrl+C in that terminal to stop it. There is n
 | `npm run sql -- "select ..."` | run SQL against the database (`-f file.sql` for a migration) |
 | `npm run typecheck` / `npm run lint` | checks to run before committing |
 
+## Deploying & demo
+
+- **Your own copy (or a friend's):** follow [docs/SETUP.md](docs/SETUP.md). Claude Code can do most of it.
+- **Login:** set `APP_PASSWORD` and `AUTH_SECRET` on the deployment. Without `APP_PASSWORD` (e.g. locally) there's no login.
+- **Public demo:** a second Vercel project from the same repo, pointed at a separate Supabase project filled with made-up data:
+  1. Create a new Supabase project, copy `.env.example` to `.env.demo`, and fill it in with the demo project's values.
+  2. `ENV_FILE=.env.demo npm run sql -- -f supabase/migrations/0001_tracking.sql`, then the same for `0002`.
+  3. `ENV_FILE=.env.demo npm run demo:seed -- --wipe <demo-project-ref>`
+  4. On the Vercel demo project, set `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (demo project) and `DEMO_MODE=true`: no login, read-only, with a banner.
+
 ## Setup (new machine)
 
 1. Install Node.js 20+ and run `npm install`.

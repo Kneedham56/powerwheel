@@ -24,6 +24,11 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - `src/lib/cycles.ts` — wheel cycles: per account+ticker, first put assignment until assigned shares are gone; total = assigned put premium + covered-call premium while holding + share P&L vs strike.
 - `scripts/sync.ts` + `docs/SYNC.md` — Robinhood import (idempotent via leg ids in `transactions.broker_ref`).
 
+## Auth & demo
+- `src/lib/auth.ts` + `src/proxy.ts`: single-password gate (`APP_PASSWORD`, `AUTH_SECRET`); login/logout are route handlers under `src/app/auth/`. Server actions re-check via `requireWrite()` in `app/actions.ts`.
+- `DEMO_MODE=true`: no login, read-only, banner. The demo uses a separate Supabase project filled by `scripts/demo-seed.ts` (made-up data; run with `ENV_FILE=.env.demo`, and it refuses to target the project in .env.local).
+- The repo is **public**: never commit account numbers, keys, project refs or real P&L figures (including in PR descriptions).
+
 ## Conventions
 - Premium/price is **per share** (as quoted); cash = price × contracts × 100.
 - Dates from forms are stored at 12:00 UTC; reports bucket by US/Eastern date; weeks start Monday.

@@ -9,7 +9,8 @@
     "lint": "eslint",
     "sync": "node --import tsx scripts/sync.ts",
     "typecheck": "next typegen && tsc --noEmit",
-    "sql": "node --import tsx scripts/sql.ts"
+    "sql": "node --import tsx scripts/sql.ts",
+    "demo:seed": "node --import tsx scripts/demo-seed.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
