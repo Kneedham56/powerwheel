@@ -40,6 +40,7 @@ Open http://localhost:3000. Press Ctrl+C in that terminal to stop it. There is n
    NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
    SUPABASE_SECRET_KEY=sb_secret_...
+   SUPABASE_SERVICE_ROLE_KEY=eyJ...    # optional legacy key, preferred when set (see src/lib/supabase.ts)
    DATABASE_URL=postgresql://...   # pooled connection string
    DIRECT_URL=postgresql://...     # direct connection string, used by npm run sql
    ```

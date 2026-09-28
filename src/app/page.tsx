@@ -46,6 +46,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
   const cy = summarizeCycles(cycles);
   const streamColor = new Map(streams.map((st) => [st.id, st.color]));
   const posStatus = new Map(positions.map((p) => [p.id, p.status]));
+  const streamOrder = new Map(streams.map((st, i) => [st.id, i])); // streams arrive in sort_order
 
   const years = [...new Set(transactions.map((t) => etDate(t.occurred_at).slice(0, 4)))].sort().reverse();
   const periodOptions = [
@@ -198,7 +199,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
                 money(w.cumulative, true),
               ]}
             >
-              <WeekBreakdown txns={weekTxns.get(w.week) ?? []} streamColor={streamColor} posStatus={posStatus} />
+              <WeekBreakdown txns={weekTxns.get(w.week) ?? []} streamColor={streamColor} posStatus={posStatus} streamOrder={streamOrder} />
             </Expandable>
           ))}
         </div>
@@ -372,7 +373,11 @@ interface BreakdownRow {
 }
 
 /** One row per trade, except a roll, which collapses to one net row: old contract(s) → new. */
-function breakdownRows(txns: TransactionRow[], posStatus: Map<string, string>): BreakdownRow[] {
+function breakdownRows(
+  txns: TransactionRow[],
+  posStatus: Map<string, string>,
+  streamOrder: Map<string, number>,
+): BreakdownRow[] {
   const rolls = new Map<string, TransactionRow[]>();
   const rows: BreakdownRow[] = [];
   for (const t of txns) {
@@ -414,33 +419,35 @@ function breakdownRows(txns: TransactionRow[], posStatus: Map<string, string>): 
       status: opens.length ? posStatus.get(opens[0].position_id) : posStatus.get(legs[0].position_id),
     });
   }
-  // puts first, then calls; A→Z by ticker; biggest premium first
+  // by stream (Settings order), then puts before calls, then biggest premium first
   const typeOrder = (t: BreakdownRow["optionType"]) => (t === "put" ? 0 : t === "call" ? 1 : 2);
   return rows.sort(
     (a, b) =>
+      (streamOrder.get(a.stream_id) ?? 99) - (streamOrder.get(b.stream_id) ?? 99) ||
       typeOrder(a.optionType) - typeOrder(b.optionType) ||
-      a.ticker.localeCompare(b.ticker) ||
       b.amount - a.amount,
   );
 }
 
-/** What made up a week, by type → ticker → premium. Rolls show as their net credit/debit. */
+/** What made up a week, by stream → type → premium. Rolls show as their net credit/debit. */
 const OUTCOME_LABEL: Record<string, string> = { closed: "bought back" };
 
 function WeekBreakdown({
   txns,
   streamColor,
   posStatus,
+  streamOrder,
 }: {
   txns: TransactionRow[];
   streamColor: Map<string, string | null>;
   posStatus: Map<string, string>;
+  streamOrder: Map<string, number>;
 }) {
   if (!txns.length) return <p className="text-xs text-muted">No option cash flow this week.</p>;
   const byTicker = new Map<string, number>();
   for (const t of txns) byTicker.set(t.ticker, (byTicker.get(t.ticker) ?? 0) + Number(t.amount));
   const tickers = [...byTicker.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-  const rows = breakdownRows(txns, posStatus);
+  const rows = breakdownRows(txns, posStatus, streamOrder);
 
   return (
     <div className="space-y-3">
