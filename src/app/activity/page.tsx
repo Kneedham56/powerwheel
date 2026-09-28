@@ -1,18 +1,7 @@
 import { Chips, PageTitle, StreamDot, param } from "@/components/ui";
 import { loadAll } from "@/lib/db";
-import { contractLabel, money, num, shortDate, signClass } from "@/lib/format";
+import { ACTION_LABEL, contractLabel, money, num, shortDate, signClass } from "@/lib/format";
 import { etDate, resolvePeriod } from "@/lib/reports";
-
-const ACTION_LABEL: Record<string, string> = {
-  sell_to_open: "Sell to open",
-  buy_to_close: "Buy to close",
-  buy_to_open: "Buy to open",
-  sell_to_close: "Sell to close",
-  expire: "Expired",
-  assign: "Assigned",
-  buy: "Buy shares",
-  sell: "Sell shares",
-};
 
 export default async function ActivityPage({ searchParams }: PageProps<"/activity">) {
   const sp = await searchParams;
