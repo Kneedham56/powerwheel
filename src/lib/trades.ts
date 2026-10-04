@@ -206,7 +206,16 @@ export async function expireTrade(
  */
 export async function assignTrade(
   db: SupabaseClient,
-  input: { positionId: string; date?: string; quantity?: number; fees?: number; brokerRef?: string | null; source?: Source },
+  input: {
+    positionId: string;
+    date?: string;
+    quantity?: number;
+    fees?: number;
+    brokerRef?: string | null;
+    source?: Source;
+    /** stock close on expiration day, used to judge the trade in win/loss reporting */
+    underlyingClose?: number;
+  },
 ): Promise<{ stockPositionId: string | null }> {
   const p = await getPosition(db, input.positionId);
   if (p.instrument !== "option") throw new Error("Only options get assigned");
@@ -223,6 +232,9 @@ export async function assignTrade(
     broker_ref: input.brokerRef ?? null,
     source: input.source,
   });
+  if (input.underlyingClose !== undefined) {
+    must(await db.from("positions").update({ underlying_close: input.underlyingClose }).eq("id", p.id), "record expiry close");
+  }
 
   if (p.option_type === "put") {
     const stock = must(

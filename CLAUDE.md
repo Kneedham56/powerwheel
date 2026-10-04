@@ -29,6 +29,11 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - `DEMO_MODE=true`: no login, read-only, banner. The demo uses a separate Supabase project filled by `scripts/demo-seed.ts` (made-up data; run with `ENV_FILE=.env.demo`, and it refuses to target the project in .env.local).
 - The repo is **public**: never commit account numbers, keys, project refs or real P&L figures (including in PR descriptions).
 
+## Win / loss
+- The win rate is a plain count (wins ÷ closed trades) with the W–L shown under it. It judges the quality of the guesses, not dollars: **wheel cycles are the authority on dollars**.
+- A trade's score is its net premium (all legs of a roll chain); a positive score is a win, negative a loss. Rolling for a net credit is a win. A buyback at a net loss is a loss.
+- If it was assigned, mark it against the stock's close on expiration day (`positions.underlying_close`): CSP minus (strike − close), called-away CC minus (close − strike), per share × 100 × contracts, **net of premium**. Only a move bigger than the premium kept is a loss. A missing close falls back to premium only (`npm run sync -- closes`).
+
 ## Conventions
 - Premium/price is **per share** (as quoted); cash = price × contracts × 100.
 - Dates from forms are stored at 12:00 UTC; reports bucket by US/Eastern date; weeks start Monday.

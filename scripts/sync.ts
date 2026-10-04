@@ -6,6 +6,8 @@
  *
  *   npm run sync -- status              # accounts, `since` date for the pull, what needs settling
  *   npm run sync -- import <file.json>  # import it
+ *   npm run sync -- closes              # assigned options still missing the stock's expiry-day close
+ *   npm run sync -- closes <file.json>  # fill them: {"AAOI": {"2026-10-02": 112.3}, ...}
  *
  * All interpretation (P&L row classification, expiration vs assignment, snapshots)
  * happens here, not in the prompt.
@@ -670,8 +672,44 @@ async function status() {
   }
 }
 
+/**
+ * Win/loss reporting marks an assigned option against where the stock closed on expiration day.
+ * With no file, lists what's missing; with a file of closes, fills it in.
+ */
+async function closes(file?: string) {
+  const db = createAdminClient();
+  const { data } = await db
+    .from("positions")
+    .select("id, ticker, expiration")
+    .eq("instrument", "option")
+    .eq("status", "assigned")
+    .is("underlying_close", null);
+  const rows = data ?? [];
+  if (!file) {
+    const need = [...new Set(rows.map((r) => `${r.ticker} ${r.expiration}`))].sort();
+    console.log(`Assigned options missing an expiry close: ${rows.length} (${need.length} ticker/date pairs)`);
+    for (const n of need) console.log("  ", n);
+    return;
+  }
+  const px = JSON.parse(readFileSync(file, "utf8")) as Record<string, Record<string, number>>;
+  let filled = 0;
+  const missing = new Set<string>();
+  for (const r of rows) {
+    const close = px[r.ticker]?.[r.expiration];
+    if (close === undefined) {
+      missing.add(`${r.ticker} ${r.expiration}`);
+      continue;
+    }
+    const { error } = await db.from("positions").update({ underlying_close: close }).eq("id", r.id);
+    if (error) throw new Error(`update ${r.ticker} ${r.expiration}: ${error.message}`);
+    filled++;
+  }
+  console.log(`Filled ${filled} of ${rows.length}.`);
+  if (missing.size) console.log(`Still missing: ${[...missing].sort().join(", ")}`);
+}
+
 const [cmd, arg] = process.argv.slice(2);
-(cmd === "import" && arg ? importFile(arg) : cmd === "status" ? status() : Promise.reject(new Error("usage: sync status | sync import <file.json> [--verbose]")))
+(cmd === "import" && arg ? importFile(arg) : cmd === "status" ? status() : cmd === "closes" ? closes(arg) : Promise.reject(new Error("usage: sync status | sync import <file.json> [--verbose] | sync closes [file.json]")))
   .catch((e) => {
     console.error(e instanceof Error ? e.message : e);
     process.exit(1);
