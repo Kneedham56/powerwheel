@@ -215,6 +215,8 @@ export async function assignTrade(
     source?: Source;
     /** stock close on expiration day, used to judge the trade in win/loss reporting */
     underlyingClose?: number;
+    /** stream for the stock lot a put assignment creates; omitted → stream rules decide */
+    streamId?: string | null;
   },
 ): Promise<{ stockPositionId: string | null }> {
   const p = await getPosition(db, input.positionId);
@@ -245,6 +247,7 @@ export async function assignTrade(
           instrument: "stock",
           ticker: p.ticker,
           side: "long",
+          stream_id: input.streamId ?? null,
           opened_at: toTimestamp(date),
           assigned_from_id: p.id,
           notes: `Assigned from ${p.ticker} ${p.strike}P ${p.expiration}`,

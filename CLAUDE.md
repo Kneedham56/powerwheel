@@ -23,6 +23,7 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - `src/lib/reports.ts` — pure reporting functions. "Realized" = roll chains closed in the period; "cash" = option cash flow by date. New metrics go here.
 - `src/lib/cycles.ts` — wheel cycles: per account+ticker, first put assignment until assigned shares are gone; total = assigned put premium + covered-call premium while holding + share P&L vs strike.
 - `scripts/sync.ts` + `docs/SYNC.md` — Robinhood import (idempotent via leg ids in `transactions.broker_ref`).
+- `src/lib/csv-import.ts` + `/import` page + `npm run sync -- csv <file> --account <name> [--dry-run]` — import a Robinhood *Account activity report* CSV (one file = one account; no AI or connector needed, so other people can use it). Pure planner (rolls are guessed from same-day trades; same-day fills of a contract merge into one position) + executor over `trades.ts`. Idempotent via a content hash in `broker_ref`. Cash rows (interest, margin interest, deposits) and share buys not from an assignment aren't tracked. Validated against the order-based sync: contract counts match exactly; win rate / realized P&L within ~1–3% (the CSV includes fees, the order sync doesn't).
 
 ## Auth & demo
 - `src/lib/auth.ts` + `src/proxy.ts`: single-password gate (`APP_PASSWORD`, `AUTH_SECRET`); login/logout are route handlers under `src/app/auth/`. Server actions re-check via `requireWrite()` in `app/actions.ts`.

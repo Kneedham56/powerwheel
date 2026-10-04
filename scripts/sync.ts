@@ -6,6 +6,7 @@
  *
  *   npm run sync -- status              # accounts, `since` date for the pull, what needs settling
  *   npm run sync -- import <file.json>  # import it
+ *   npm run sync -- csv <report.csv> --account <name> [--dry-run]   # Robinhood account activity CSV
  *   npm run sync -- closes              # assigned options still missing the stock's expiry-day close
  *   npm run sync -- closes <file.json>  # fill them: {"AAOI": {"2026-10-02": 112.3}, ...}
  *
@@ -21,6 +22,7 @@ import "./env";
 import { readFileSync } from "node:fs";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "../src/lib/supabase";
+import { applyEvents, planImport } from "../src/lib/csv-import";
 import { assignTrade, closeTrade, expireTrade, openTrade } from "../src/lib/trades";
 
 // ---------------------------------------------------------------------------
@@ -708,8 +710,38 @@ async function closes(file?: string) {
   if (missing.size) console.log(`Still missing: ${[...missing].sort().join(", ")}`);
 }
 
+/** Import a Robinhood account activity report (see lib/csv-import.ts). --dry-run only prints the plan. */
+async function csvImport(file: string) {
+  const args = process.argv.slice(2);
+  const accountName = args[args.indexOf("--account") + 1];
+  const plan = planImport(readFileSync(file, "utf8"));
+  console.log(`${plan.range?.from} → ${plan.range?.to}: ${plan.events.length} events`, plan.stats);
+  console.log("not tracked:", plan.ignored);
+  for (const w of plan.warnings.slice(0, 20)) console.log("  !", w);
+  if (args.includes("--dry-run")) return;
+  if (!args.includes("--account") || !accountName) throw new Error("usage: sync csv <file> --account <name> [--dry-run]");
+  const db = createAdminClient();
+  const { data: acct } = await db.from("accounts").select("id").eq("name", accountName).maybeSingle();
+  if (!acct) throw new Error(`No account named "${accountName}" (Settings → Accounts)`);
+  const t0 = Date.now();
+  let cursor: number | null = 0;
+  let applied = 0;
+  let skipped = 0;
+  const warnings: string[] = [];
+  while (cursor !== null) {
+    const r = await applyEvents(db, acct.id, plan.events, cursor, 25_000);
+    applied += r.applied;
+    skipped += r.skipped;
+    warnings.push(...r.warnings);
+    cursor = r.next;
+    console.log(`  ${cursor ?? plan.events.length}/${plan.events.length} (${Math.round((Date.now() - t0) / 1000)}s)`);
+  }
+  console.log(`Imported ${applied} event(s), skipped ${skipped} already-imported.`);
+  for (const w of warnings.slice(0, 40)) console.log("  !", w);
+}
+
 const [cmd, arg] = process.argv.slice(2);
-(cmd === "import" && arg ? importFile(arg) : cmd === "status" ? status() : cmd === "closes" ? closes(arg) : Promise.reject(new Error("usage: sync status | sync import <file.json> [--verbose] | sync closes [file.json]")))
+(cmd === "import" && arg ? importFile(arg) : cmd === "status" ? status() : cmd === "closes" ? closes(arg) : cmd === "csv" && arg ? csvImport(arg) : Promise.reject(new Error("usage: sync status | sync import <file.json> [--verbose] | sync closes [file.json] | sync csv <file.csv> --account <name> [--dry-run]")))
   .catch((e) => {
     console.error(e instanceof Error ? e.message : e);
     process.exit(1);

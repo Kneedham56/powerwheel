@@ -18,6 +18,7 @@ const NAV = [
   { href: "/positions", label: "Positions" },
   { href: "/trades/new", label: "New trade" },
   { href: "/activity", label: "Activity" },
+  { href: "/import", label: "Import" },
   { href: "/snapshots", label: "Account value" },
   { href: "/settings", label: "Settings" },
 ];
@@ -38,7 +39,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
             <Link href="/" className="mr-4 font-semibold tracking-tight">
               PowerWheel
             </Link>
-            {signedIn && NAV.map((n) => (
+            {signedIn && NAV.filter((n) => !(demo && n.href === "/import")).map((n) => (
               <Link key={n.href} href={n.href} className="text-sm text-muted hover:text-foreground">
                 {n.label}
               </Link>
