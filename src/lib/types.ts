@@ -59,6 +59,8 @@ export interface PositionRow {
   chain_id: string;
   assigned_from_id: string | null;
   notes: string | null;
+  /** stock close on expiration day; set only for assigned options (see docs/SYNC.md) */
+  underlying_close: number | null;
   account_name: string;
   stream_name: string;
   stream_slug: string;

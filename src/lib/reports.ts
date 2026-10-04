@@ -123,8 +123,29 @@ export interface Chain {
   closed: string | null; // ET date, null while any leg is live
   outcome: "open" | "expired" | "closed" | "assigned";
   net: number;
+  /** what the trade counts as for win/loss: net, minus how far the stock ended past the strike if assigned */
+  score: number;
+  /** assigned, but the expiry close isn't recorded yet, so score falls back to net */
+  missingClose: boolean;
   collateral: number; // of the first leg
   current: PositionRow; // latest leg
+}
+
+/**
+ * Win/loss score. A trade that wasn't assigned scores its net premium. An assigned one is
+ * marked against where the stock closed on expiration day: a CSP loses (strike − close) per
+ * share, a called-away CC gives up (close − strike), both net of the premium kept. So a put
+ * assigned just under the strike is still a win, and only a drop (or run) bigger than the
+ * premium is a loss. Rolled chains net every leg's premium first.
+ */
+function scoreChain(current: PositionRow, outcome: Chain["outcome"], net: number) {
+  if (outcome !== "assigned") return { score: net, missingClose: false };
+  if (current.underlying_close === null || current.underlying_close === undefined) return { score: net, missingClose: true };
+  const strike = Number(current.strike);
+  const close = Number(current.underlying_close);
+  const past = current.option_type === "put" ? strike - close : close - strike;
+  const score = net - Math.max(0, past) * 100 * Number(current.quantity);
+  return { score: Math.round(score * 100) / 100, missingClose: false }; // cents, so a break-even doesn't flip on float noise
 }
 
 export function buildChains(positions: PositionRow[]): Chain[] {
@@ -144,6 +165,8 @@ export function buildChains(positions: PositionRow[]): Chain[] {
     const first = legs[0];
     // a "rolled" leaf means the new leg wasn't linked; treat the chain as finished
     const live = current.status === "open";
+    const outcome = live ? "open" : current.status === "rolled" ? "closed" : (current.status as Chain["outcome"]);
+    const net = legs.reduce((s, l) => s + Number(l.net_amount), 0);
     chains.push({
       id,
       ticker: first.ticker,
@@ -156,8 +179,9 @@ export function buildChains(positions: PositionRow[]): Chain[] {
       rolls: legs.length - 1,
       opened: etDate(first.opened_at),
       closed: live || !current.closed_at ? null : etDate(current.closed_at),
-      outcome: live ? "open" : current.status === "rolled" ? "closed" : (current.status as Chain["outcome"]),
-      net: legs.reduce((s, l) => s + Number(l.net_amount), 0),
+      outcome,
+      net,
+      ...scoreChain(current, outcome, net),
       collateral: Number(first.collateral ?? 0),
       current,
     });
@@ -212,6 +236,7 @@ export interface Summary {
   chainsClosed: number;
   wins: number;
   losses: number;
+  /** wins ÷ closed trades, a plain count; see scoreChain for what counts as a win or loss */
   winRate: number | null;
   realizedOptions: number;
   realizedStock: number;
@@ -265,10 +290,10 @@ export function summarize(
   const chains = buildChains(pos);
   const closed = chains.filter((c) => inPeriod(c.closed, period));
 
-  const winners = closed.filter((c) => c.net > 0 && c.outcome !== "assigned");
-  // win/loss count treats an assignment as a loss; the dollar stats use trades that lost money
-  const losers = closed.filter((c) => c.net < 0 || c.outcome === "assigned");
-  const moneyLosers = closed.filter((c) => c.net < 0);
+  // wins and losses go by score (see scoreChain), not raw net, so an assignment only counts as a loss when it cost more than the premium
+  const winners = closed.filter((c) => c.score > 0);
+  const losers = closed.filter((c) => c.score < 0);
+  const moneyLosers = losers;
   const realizedOptions = sum(closed.map((c) => c.net));
   const realizedStock = sum(
     pos
@@ -312,12 +337,12 @@ export function summarize(
     realizedOptions,
     realizedStock,
     realized,
-    grossGains: sum(winners.map((c) => c.net)),
-    grossLosses: sum(moneyLosers.map((c) => c.net)),
-    avgWin: winners.length ? sum(winners.map((c) => c.net)) / winners.length : null,
-    avgLoss: moneyLosers.length ? sum(moneyLosers.map((c) => c.net)) / moneyLosers.length : null,
-    largestWin: winners.length ? Math.max(...winners.map((c) => c.net)) : null,
-    largestLoss: moneyLosers.length ? Math.min(...moneyLosers.map((c) => c.net)) : null,
+    grossGains: sum(winners.map((c) => c.score)),
+    grossLosses: sum(moneyLosers.map((c) => c.score)),
+    avgWin: winners.length ? sum(winners.map((c) => c.score)) / winners.length : null,
+    avgLoss: moneyLosers.length ? sum(moneyLosers.map((c) => c.score)) / moneyLosers.length : null,
+    largestWin: winners.length ? Math.max(...winners.map((c) => c.score)) : null,
+    largestLoss: moneyLosers.length ? Math.min(...moneyLosers.map((c) => c.score)) : null,
     expired: closed.filter((c) => c.outcome === "expired").length,
     boughtBack: closed.filter((c) => c.outcome === "closed").length,
     assigned: closed.filter((c) => c.outcome === "assigned").length,
@@ -453,7 +478,8 @@ export interface GroupRow {
   color?: string | null;
   chains: number;
   wins: number;
-  winRate: number | null;
+  losses: number;
+  winRate: number | null; // wins ÷ trades
   net: number;
   assigned: number;
   rolls: number;
@@ -476,7 +502,8 @@ export function groupChains(
   }
   return [...groups.entries()]
     .map(([key, list]) => {
-      const wins = list.filter((c) => c.net > 0 && c.outcome !== "assigned").length;
+      const wins = list.filter((c) => c.score > 0).length;
+      const losses = list.filter((c) => c.score < 0).length;
       const withColl = list.filter((c) => c.collateral > 0);
       const stream = by === "stream" ? streams.find((s) => s.id === key) : undefined;
       return {
@@ -486,6 +513,7 @@ export function groupChains(
         color: stream?.color,
         chains: list.length,
         wins,
+        losses,
         winRate: ratio(wins, list.length),
         net: sum(list.map((c) => c.net)),
         assigned: list.filter((c) => c.outcome === "assigned").length,

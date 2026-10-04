@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "powerwheel",
-      "runtimeExecutable": "C:\Program Files\nodejs\npm.cmd",
+      "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 3000
     }

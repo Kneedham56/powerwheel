@@ -59,7 +59,23 @@ npm run sync -- status
 
 `status` should show **0** open options past expiration.
 
-## 5. Report
+## 5. Expiry closes for assignments
+
+Win/loss reporting marks each assigned option against where the stock closed on expiration day, so every assigned option needs that price.
+
+```bash
+npm run sync -- closes          # lists "TICKER YYYY-MM-DD" pairs still missing a close
+```
+
+For each pair, call `get_equity_historicals` (`symbols=[TICKER]`, `interval="day"`, a `start_time` / `end_time` window around the expiration date) and take the **close_price of the bar for that date**. Save `sync/inbox/closes-<today>.json` as `{"AAOI": {"2026-10-02": 112.3}}`, then:
+
+```bash
+npm run sync -- closes sync/inbox/closes-<today>.json
+```
+
+Until a close is filled, that trade scores at its premium only.
+
+## 6. Report
 
 Give a short summary: trades imported per account, snapshot values, and **every warning, word for word**. Keep it brief.
 

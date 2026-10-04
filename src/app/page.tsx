@@ -14,7 +14,7 @@ import {
 import { WeeklyChart, type WeeklyPoint } from "@/components/WeeklyChart";
 import { isDemo } from "@/lib/auth";
 import { loadAll } from "@/lib/db";
-import { ACTION_LABEL, money, num, pct, shortDate, signClass } from "@/lib/format";
+import { money, num, pct, shortDate, signClass } from "@/lib/format";
 import {
   chainsByGroup,
   etDate,
@@ -70,6 +70,22 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
     <div className="space-y-6">
       <Flash sp={sp} />
       <PageTitle>Reports · {period.label}</PageTitle>
+
+      {demo && (
+        <div className="card space-y-1.5 text-sm">
+          <h2 className="font-medium">What you&apos;re looking at</h2>
+          <p className="text-muted">
+            I built this web app to track and report on my own investing. It follows a strategy where you earn small
+            fees by agreeing to buy or sell a stock at a set price, and it turns a long list of raw trades into a
+            dashboard: how much was earned, how much money was tied up to earn it, and how often it worked. You
+            don&apos;t need to follow the finance — it&apos;s here to show the app itself.
+          </p>
+          <p className="text-xs text-muted">
+            Built with Next.js, React, TypeScript and Tailwind on a Postgres database (Supabase). The same code runs my
+            private, password-protected version and this read-only public demo. All figures here are made up.
+          </p>
+        </div>
+      )}
 
       <div className="card space-y-2">
         <Chips sp={sp} path="/" name="period" options={periodOptions} />
@@ -127,7 +143,7 @@ export default async function ReportsPage({ searchParams }: PageProps<"/">) {
           <Stat
             label="Win rate"
             value={pct(s.winRate)}
-            sub={`${s.wins}W / ${s.losses}L · avg win ${money(s.avgWin, true)} · avg loss ${money(s.avgLoss, true)}`}
+            sub={`${s.wins}W – ${s.losses}L`}
           />
           <Stat
             label="Avg return / trade"
@@ -341,7 +357,9 @@ function GroupTable({
                 {r.label}
               </>,
               r.chains,
-              pct(r.winRate),
+              <span key="w">
+                {pct(r.winRate)} <span className="text-xs text-muted">{r.wins}W–{r.losses}L</span>
+              </span>,
               r.assigned,
               r.rolls,
               pct(r.avgReturnOnCollateral, 2),
@@ -365,12 +383,13 @@ interface BreakdownRow {
   ticker: string;
   strike: string; // "40", or "375 → 385" for a roll
   optionType: "put" | "call" | null;
-  action: string;
   stream_id: string;
   stream_name: string;
   quantity: number;
   price: number; // per share; net per share for rolls
   amount: number;
+  /** strike × 100 × contracts (for a roll: the new contract); ROC = amount ÷ this */
+  collateral: number | null;
   /** where the position ended up (for a roll: the new contract) */
   status?: string;
 }
@@ -392,12 +411,12 @@ function breakdownRows(
         ticker: t.ticker,
         strike: num(t.strike),
         optionType: t.option_type,
-        action: ACTION_LABEL[t.action] ?? t.action,
         stream_id: t.stream_id,
         stream_name: t.stream_name,
         quantity: Number(t.quantity),
         price: Number(t.price),
         amount: Number(t.amount),
+        collateral: t.strike ? Number(t.strike) * 100 * Number(t.quantity) : null,
         status: posStatus.get(t.position_id),
       });
   }
@@ -413,12 +432,12 @@ function breakdownRows(
       ticker: legs[0].ticker,
       strike: opens.length && closes.length ? `${strikes(closes)} → ${strikes(opens)}` : strikes(legs),
       optionType: (opens[0] ?? legs[0]).option_type,
-      action: opens.length && closes.length ? (amount >= 0 ? "Roll (credit)" : "Roll (debit)") : "Roll (partial)",
       stream_id: legs[0].stream_id,
       stream_name: legs[0].stream_name,
       quantity: qty,
       price: qty ? amount / (qty * 100) : 0,
       amount,
+      collateral: (opens[0] ?? legs[0]).strike ? Number((opens[0] ?? legs[0]).strike) * 100 * qty : null,
       status: opens.length ? posStatus.get(opens[0].position_id) : posStatus.get(legs[0].position_id),
     });
   }
@@ -469,11 +488,11 @@ function WeekBreakdown({
             <th>Ticker</th>
             <th>Strike</th>
             <th>Type</th>
-            <th>Action</th>
             <th>Stream</th>
             <th>Qty</th>
             <th>Price</th>
             <th>Premium</th>
+            <th>ROC</th>
             <th>Outcome</th>
           </tr>
         </thead>
@@ -484,7 +503,6 @@ function WeekBreakdown({
               <td className="font-medium">{r.ticker}</td>
               <td>{r.strike}</td>
               <td>{r.optionType && <OptionTypePill type={r.optionType} />}</td>
-              <td>{r.action}</td>
               <td>
                 <StreamDot color={streamColor.get(r.stream_id)} />
                 {r.stream_name}
@@ -492,6 +510,7 @@ function WeekBreakdown({
               <td>{num(r.quantity)}</td>
               <td>{money(r.price)}</td>
               <td className={signClass(r.amount)}>{money(r.amount)}</td>
+              <td className={signClass(r.amount)}>{r.collateral ? pct(r.amount / r.collateral, 2) : "—"}</td>
               <td>{r.status && <StatusPill status={r.status} label={OUTCOME_LABEL[r.status]} />}</td>
             </tr>
           ))}
@@ -587,7 +606,9 @@ function ChainList({ chains }: { chains: Chain[] }) {
           <th>Account</th>
           <th>Outcome</th>
           <th>Rolls</th>
-          <th>Net</th>
+          <th>Net premium</th>
+          <th>Stock closed</th>
+          <th>Result</th>
           <th>Return</th>
         </tr>
       </thead>
@@ -612,6 +633,10 @@ function ChainList({ chains }: { chains: Chain[] }) {
             </td>
             <td>{c.rolls || ""}</td>
             <td className={signClass(c.net)}>{money(c.net)}</td>
+            <td>{c.outcome === "assigned" && c.current.underlying_close ? money(c.current.underlying_close) : ""}</td>
+            <td className={c.score > 0 ? "text-gain" : c.score < 0 ? "text-loss" : ""}>
+              {c.outcome === "open" ? "" : c.score > 0 ? "Win" : c.score < 0 ? "Loss" : "Even"}
+            </td>
             <td>{c.collateral ? pct(c.net / c.collateral, 2) : "—"}</td>
           </tr>
         ))}

@@ -278,7 +278,7 @@ async function main() {
       const p = price.get(pos.ticker)!;
       if (pos.option_type === "put") {
         if (p < strike) {
-          await assignTrade(db, { positionId: pos.id, date: friday });
+          await assignTrade(db, { positionId: pos.id, date: friday, underlyingClose: p });
           const { data: pq } = await db.from("v_positions").select("quantity").eq("id", pos.id).single();
           const shares = Number(pq?.quantity ?? t.contracts) * 100;
           const h = holdings.get(t.symbol);
@@ -288,7 +288,7 @@ async function main() {
       } else {
         const h = holdings.get(t.symbol);
         if (p > strike) {
-          await assignTrade(db, { positionId: pos.id, date: friday }); // called away
+          await assignTrade(db, { positionId: pos.id, date: friday, underlyingClose: p }); // called away
           holdings.delete(t.symbol);
         } else {
           await expireTrade(db, { positionId: pos.id, date: friday });
