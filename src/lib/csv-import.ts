@@ -446,13 +446,14 @@ async function closeLeg(db: Db, accountId: string, l: Leg, rollGroupId: string |
   return first;
 }
 
-async function openLeg(db: Db, accountId: string, l: Leg, rolledFromId: string | null, rollGroupId: string | null, res: ApplyResult) {
+async function openLeg(db: Db, accountId: string, streamId: string | null, l: Leg, rolledFromId: string | null, rollGroupId: string | null, res: ApplyResult) {
   if (await exists(db, l.ref)) {
     res.skipped++;
     return;
   }
   await openTrade(db, {
     accountId,
+    streamId,
     ticker: l.contract.ticker,
     kind: l.contract.type === "put" ? "CSP" : "CC",
     strike: l.contract.strike,
@@ -470,10 +471,10 @@ async function openLeg(db: Db, accountId: string, l: Leg, rolledFromId: string |
 }
 
 /** Apply one event. Safe to repeat: rows already imported are skipped. */
-export async function applyEvent(db: Db, accountId: string, e: PlanEvent, res: ApplyResult) {
+export async function applyEvent(db: Db, accountId: string, e: PlanEvent, res: ApplyResult, streamId: string | null = null) {
   switch (e.kind) {
     case "open":
-      return openLeg(db, accountId, e.leg, null, null, res);
+      return openLeg(db, accountId, streamId, e.leg, null, null, res);
     case "close":
       await closeLeg(db, accountId, e.leg, null, res);
       return;
@@ -483,7 +484,7 @@ export async function applyEvent(db: Db, accountId: string, e: PlanEvent, res: A
         const id = await closeLeg(db, accountId, c, e.id, res); // every close runs; the first one is what the new leg rolls from
         from ??= id;
       }
-      for (const o of e.opens) await openLeg(db, accountId, o, from, e.id, res);
+      for (const o of e.opens) await openLeg(db, accountId, streamId, o, from, e.id, res);
       const { error } = await db.rpc("merge_roll_chain", { p_roll_group: e.id });
       if (error) throw new Error(`merge_roll_chain: ${error.message}`);
       return;
@@ -497,7 +498,7 @@ export async function applyEvent(db: Db, accountId: string, e: PlanEvent, res: A
       const left = await eachLot(db, accountId, e.contract, e.quantity, async (lot, take, i) => {
         const brokerRef = i === 0 ? e.ref : `${e.ref}:${i}`;
         if (e.kind === "expire") await expireTrade(db, { positionId: lot.id, date: e.date, quantity: take, brokerRef, source: "import" });
-        else await assignTrade(db, { positionId: lot.id, date: e.date, quantity: take, brokerRef, source: "import" });
+        else await assignTrade(db, { positionId: lot.id, date: e.date, quantity: take, brokerRef, source: "import", streamId });
       });
       if (left > 0)
         res.warnings.push(`${e.date}: no open position for ${e.kind === "expire" ? "expiration" : "assignment"} of ${left} ${label(e.contract)} (opened before this report starts?)`);
@@ -541,20 +542,24 @@ export async function applyEvent(db: Db, accountId: string, e: PlanEvent, res: A
   }
 }
 
-/** Apply events from `cursor` until done or `budgetMs` is used. Returns where to resume. */
+/**
+ * Apply events from `cursor` until done or `budgetMs` is used. Returns where to resume.
+ * `streamId` puts everything in one stream; null lets the stream rules decide.
+ */
 export async function applyEvents(
   db: Db,
   accountId: string,
   events: PlanEvent[],
   cursor = 0,
   budgetMs = Infinity,
+  streamId: string | null = null,
 ): Promise<ApplyResult & { next: number | null }> {
   const res: ApplyResult = { applied: 0, skipped: 0, warnings: [] };
   const start = Date.now();
   let i = cursor;
   for (; i < events.length; i++) {
     if (Date.now() - start > budgetMs) return { ...res, next: i };
-    await applyEvent(db, accountId, events[i], res);
+    await applyEvent(db, accountId, events[i], res, streamId);
   }
   return { ...res, next: null };
 }

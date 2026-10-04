@@ -6,7 +6,7 @@ import { ImportForm } from "./ImportForm";
 export const maxDuration = 60;
 
 export default async function ImportPage() {
-  const { accounts } = await loadAll();
+  const { accounts, streams } = await loadAll();
   return (
     <div className="space-y-6">
       <PageTitle>Import from Robinhood</PageTitle>
@@ -22,13 +22,17 @@ export default async function ImportPage() {
           <li>It usually takes a couple of hours. When it&apos;s ready, download the CSV and upload it below.</li>
         </ol>
         <p className="text-muted">
-          One file is one account. Upload a new report whenever you like: anything already imported is skipped, so
+          One file is one account, but the stream is up to you: send each account to its own stream, or choose the same
+          stream for every file to lump them together. Upload a new report whenever you like: anything already imported is skipped, so
           overlapping dates are fine. Rolls are inferred from same-day trades, so a few may be grouped differently
           than in Robinhood. Interest, deposits and shares you bought yourself aren&apos;t tracked.
         </p>
       </section>
 
-      <ImportForm accounts={accounts.map((a) => ({ id: a.id, name: a.name }))} />
+      <ImportForm
+        accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
+        streams={streams.filter((st) => st.is_active).map((st) => ({ id: st.id, name: st.name }))}
+      />
     </div>
   );
 }

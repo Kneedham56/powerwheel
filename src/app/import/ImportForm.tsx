@@ -2,10 +2,14 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { importCsvStep, type ImportStep } from "./actions";
+import { importCsvStep, type ImportStep, type ImportTarget } from "./actions";
+
+const NEW = "__new__";
+const AUTO = "auto";
 
 interface Props {
   accounts: { id: string; name: string }[];
+  streams: { id: string; name: string }[];
 }
 
 interface Totals {
@@ -14,8 +18,11 @@ interface Totals {
   warnings: string[];
 }
 
-export function ImportForm({ accounts }: Props) {
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
+export function ImportForm({ accounts, streams }: Props) {
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? NEW);
+  const [newAccount, setNewAccount] = useState("");
+  const [streamId, setStreamId] = useState(AUTO);
+  const [newStream, setNewStream] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string>("");
@@ -32,11 +39,12 @@ export function ImportForm({ accounts }: Props) {
     setTotals(null);
     try {
       const text = await file.text();
+      const target: ImportTarget = { account: accountId, newAccount, stream: streamId, newStream };
       let cursor = 0;
       const acc: Totals = { applied: 0, skipped: 0, warnings: [] };
       for (;;) {
         setProgress(dryRun ? "Reading the file…" : cursor ? `Importing… ${cursor} events done` : "Importing…");
-        const step = await importCsvStep(accountId, text, cursor, dryRun);
+        const step = await importCsvStep(target, text, cursor, dryRun);
         if (!step.ok) throw new Error(step.error ?? "Import failed");
         setPlan(step);
         if (dryRun) break;
@@ -62,8 +70,8 @@ export function ImportForm({ accounts }: Props) {
   return (
     <div className="space-y-4">
       <div className="card space-y-3">
-        <div className="grid gap-3 md:grid-cols-2">
-          <div>
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="space-y-2">
             <label className="label">Which account is this file for?</label>
             <select className="input" value={accountId} onChange={(e) => setAccountId(e.target.value)} disabled={busy}>
               {accounts.map((a) => (
@@ -71,7 +79,26 @@ export function ImportForm({ accounts }: Props) {
                   {a.name}
                 </option>
               ))}
+              <option value={NEW}>+ New account…</option>
             </select>
+            {accountId === NEW && (
+              <input className="input" placeholder="Account name" value={newAccount} onChange={(e) => setNewAccount(e.target.value)} disabled={busy} />
+            )}
+          </div>
+          <div className="space-y-2">
+            <label className="label">Which stream should it go in?</label>
+            <select className="input" value={streamId} onChange={(e) => setStreamId(e.target.value)} disabled={busy}>
+              <option value={AUTO}>Automatic (by your stream rules)</option>
+              {streams.map((st) => (
+                <option key={st.id} value={st.id}>
+                  {st.name}
+                </option>
+              ))}
+              <option value={NEW}>+ New stream…</option>
+            </select>
+            {streamId === NEW && (
+              <input className="input" placeholder="Stream name" value={newStream} onChange={(e) => setNewStream(e.target.value)} disabled={busy} />
+            )}
           </div>
           <div>
             <label className="label">Robinhood account activity report (.csv)</label>
