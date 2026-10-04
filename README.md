@@ -16,6 +16,7 @@ https://powerwheel-demo.vercel.app/
   - a weekly chart, and breakdowns by stream, strategy and ticker
 - **Account value snapshots.** Recorded weekly, so returns are measured against the capital you actually had.
 - **Robinhood sync.** A script imports orders pulled with the Robinhood connector. It's idempotent and handles rolls. See [docs/SYNC.md](docs/SYNC.md).
+- **CSV import.** The Import page (or `npm run sync -- csv`) loads a Robinhood *Account activity report* CSV, with no Claude or connector needed.
 
 ## Running it
 
@@ -35,7 +36,7 @@ Open http://localhost:3000. Press Ctrl+C in that terminal to stop it. There is n
 
 ## Deploying & demo
 
-- **Your own copy (or a friend's):** follow [docs/SETUP.md](docs/SETUP.md). Claude Code can do most of it.
+- **Your own copy (or a friend's):** follow [docs/SETUP.md](docs/SETUP.md) (Claude Code does most of it), or, with no coding at all, [docs/FRIEND-SETUP.md](docs/FRIEND-SETUP.md) (paste one SQL file, upload a CSV).
 - **Login:** set `APP_PASSWORD` and `AUTH_SECRET` on the deployment. Without `APP_PASSWORD` (e.g. locally) there's no login.
 - **Public demo:** a second Vercel project from the same repo, pointed at a separate Supabase project filled with made-up data:
   1. Create a new Supabase project, copy `.env.example` to `.env.demo`, and fill it in with the demo project's values.
