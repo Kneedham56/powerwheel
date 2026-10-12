@@ -387,38 +387,57 @@ interface BreakdownRow {
   stream_name: string;
   quantity: number;
   price: number; // per share; net per share for rolls
-  amount: number;
+  /** buyback price per share when the row nets a sale and its buyback; shown as "sold → bought back" */
+  closePrice?: number | null;
+  amount: number; // net cash for the row: premium sold minus anything bought back
   /** strike × 100 × contracts (for a roll: the new contract); ROC = amount ÷ this */
   collateral: number | null;
   /** where the position ended up (for a roll: the new contract) */
   status?: string;
 }
 
-/** One row per trade, except a roll, which collapses to one net row: old contract(s) → new. */
+/**
+ * One row per position, netting its sale against any buyback, so the amount is what that position
+ * actually added to the account. A roll collapses to one net row: old contract(s) → new.
+ */
 function breakdownRows(
   txns: TransactionRow[],
   posStatus: Map<string, string>,
   streamOrder: Map<string, number>,
 ): BreakdownRow[] {
   const rolls = new Map<string, TransactionRow[]>();
+  const positions = new Map<string, TransactionRow[]>();
   const rows: BreakdownRow[] = [];
   for (const t of txns) {
     if (t.roll_group_id) rolls.set(t.roll_group_id, [...(rolls.get(t.roll_group_id) ?? []), t]);
-    else
-      rows.push({
-        key: t.id,
-        date: t.occurred_at,
-        ticker: t.ticker,
-        strike: num(t.strike),
-        optionType: t.option_type,
-        stream_id: t.stream_id,
-        stream_name: t.stream_name,
-        quantity: Number(t.quantity),
-        price: Number(t.price),
-        amount: Number(t.amount),
-        collateral: t.strike ? Number(t.strike) * 100 * Number(t.quantity) : null,
-        status: posStatus.get(t.position_id),
-      });
+    else positions.set(t.position_id, [...(positions.get(t.position_id) ?? []), t]);
+  }
+  const isOpen = (t: TransactionRow) => t.action === "sell_to_open" || t.action === "buy_to_open";
+  const isClose = (t: TransactionRow) => t.action === "buy_to_close" || t.action === "sell_to_close";
+  const wavg = (ls: TransactionRow[]) => {
+    const q = ls.reduce((a, l) => a + Number(l.quantity), 0);
+    return q ? ls.reduce((a, l) => a + Number(l.price) * Number(l.quantity), 0) / q : 0;
+  };
+  for (const [positionId, legs] of positions) {
+    const opens = legs.filter(isOpen);
+    const closes = legs.filter(isClose);
+    const first = legs[0];
+    const qty = opens.reduce((a, l) => a + Number(l.quantity), 0) || legs.reduce((a, l) => a + Number(l.quantity), 0);
+    rows.push({
+      key: positionId,
+      date: legs.map((l) => l.occurred_at).sort()[0],
+      ticker: first.ticker,
+      strike: num(first.strike),
+      optionType: first.option_type,
+      stream_id: first.stream_id,
+      stream_name: first.stream_name,
+      quantity: qty,
+      price: opens.length ? wavg(opens) : wavg(legs),
+      closePrice: opens.length && closes.length ? wavg(closes) : null,
+      amount: legs.reduce((a, l) => a + Number(l.amount), 0),
+      collateral: first.strike ? Number(first.strike) * 100 * qty : null,
+      status: posStatus.get(positionId),
+    });
   }
   for (const [id, legs] of rolls) {
     const closes = legs.filter((l) => l.action === "buy_to_close" || l.action === "sell_to_close");
@@ -451,7 +470,7 @@ function breakdownRows(
   );
 }
 
-/** What made up a week, by stream → type → premium. Rolls show as their net credit/debit. */
+/** What made up a week, by stream → type → net premium. A sale and its buyback share one row; rolls show as their net credit/debit. */
 const OUTCOME_LABEL: Record<string, string> = { closed: "bought back" };
 
 function WeekBreakdown({
@@ -491,7 +510,7 @@ function WeekBreakdown({
             <th>Stream</th>
             <th>Qty</th>
             <th>Price</th>
-            <th>Premium</th>
+            <th>Net premium</th>
             <th>ROC</th>
             <th>Outcome</th>
           </tr>
@@ -508,7 +527,7 @@ function WeekBreakdown({
                 {r.stream_name}
               </td>
               <td>{num(r.quantity)}</td>
-              <td>{money(r.price)}</td>
+              <td>{r.closePrice != null ? `${money(r.price)} → ${money(r.closePrice)}` : money(r.price)}</td>
               <td className={signClass(r.amount)}>{money(r.amount)}</td>
               <td className={signClass(r.amount)}>{r.collateral ? pct(r.amount / r.collateral, 2) : "—"}</td>
               <td>{r.status && <StatusPill status={r.status} label={OUTCOME_LABEL[r.status]} />}</td>
