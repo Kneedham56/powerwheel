@@ -12,7 +12,11 @@ export function createAdminClient(): SupabaseClient {
   // clock runs ahead of the database's (seen in bursts lasting more than 10s).
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
   if (!url || !key) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SECRET_KEY");
+    throw new Error(
+      "Missing NEXT_PUBLIC_SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY). " +
+        "Locally they come from .env.local; in a cloud session or on Vercel they must be set as environment variables " +
+        "(a .env.local file is never present there).",
+    );
   }
   return createClient(url, key, { auth: { persistSession: false } });
 }
