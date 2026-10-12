@@ -15,6 +15,8 @@ npm run sync -- status
 
 For each tracked account, `status` prints its `account_ref` and a `since` date. Only Individual and Joint are tracked. Ignore the Roth IRA and the "Agentic" account.
 
+**Credentials.** In a cloud session the Supabase keys are **environment variables** from the cloud environment's settings. There is **no `.env.local` file in the cloud, and that's expected**: don't check for it, and don't stop because it's missing. `npm run sync -- status` is the real test. If it prints the accounts, the credentials work. Only if it fails with a "Missing NEXT_PUBLIC_SUPABASE_URL…" error should you stop and report that the cloud environment's variables need setting.
+
 ## 2. Fetch (for each account)
 
 | Call | Arguments |
