@@ -120,20 +120,24 @@ repo; anyone can also run it by hand. The numbers come from [`src/lib/rules.ts`]
 
 ## Wednesday
 
-Run after Wednesday's close.
+Run Wednesday morning before the open (the routine fires at 5am Pacific), so it's ready before the bell. Prices
+are through Tuesday's close.
 
 1. `npm run prep -- wed-symbols` prints the batches (indices, every rotation fund, the watch-level symbols, Sunday's
    picks and the watchlist). Fetch daily bars for each batch as on Sunday.
-2. Write `wed.json`: `{"run_date": "YYYY-MM-DD", "daily": [...files], "narrative": "wed-narrative.json"}`.
+2. Write `wed.json`: `{"run_date": "YYYY-MM-DD", "through": "YYYY-MM-DD", "daily": [...files], "narrative": "wed-narrative.json"}`.
+   `run_date` is today (Wednesday); `through` is the last close (Tuesday, or earlier after a holiday), so a premarket
+   bar for today isn't used.
 3. `npm run prep -- wed-context wed.json` prints how the indices, the watched levels, Sunday's picks and the rotation
    map moved since Sunday, the biggest watchlist moves and what's left on the calendar.
-4. WebSearch what happened Monday to Wednesday (data releases, earnings, Fed talk) and what's still ahead.
+4. WebSearch what happened Monday and Tuesday (data releases, earnings, Fed talk), overnight and premarket news
+   (futures, earnings before the bell), and what's still ahead, starting with today.
 5. Write `wed-narrative.json`:
 
    ```json
    {
      "headline": "One sentence: how the week is going.",
-     "so_far": "2 to 3 sentences: what happened since Sunday, and which levels held or broke.",
+     "so_far": "2 to 3 sentences: what happened since Sunday (including overnight), and which levels held or broke.",
      "whats_left": "1 to 2 sentences: the events still ahead and why they matter.",
      "outlook": "1 to 2 sentences: is Sunday's base case on track, and what would change it into Friday.",
      "calendar_additions": []
