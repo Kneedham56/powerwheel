@@ -30,6 +30,11 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - **Weekly prep:** `src/lib/prep.ts` (pure builder) + `scripts/prep.ts` (`npm run prep -- …`, I/O and DB) + `docs/PREP.md` (the runbook the Sunday and Wednesday routines follow). Reports go to `prep_reports` (jsonb), the top 5 picks plus an SPY baseline to `pick_log`, settled at expiry the next Sunday.
 - **`/prep` is public** (exempted in `src/proxy.ts`): market and watchlist data only. Never put anything about an account in a report (holdings, sizes, leverage, P&L).
 
+## AI-vs-Kyle race
+- A paper AI plays the same ruleset with its own playbook (`AI` in `rules.ts`, RULES.md section 10) against the real Individual account. **Paper only**: it never places, changes or cancels an order.
+- `src/lib/race.ts` (pure engine: Monday entry, Wednesday take-profit and redeploy, Friday settlement, the review that grades both sides' trades) + `scripts/race.ts` (`npm run race -- …`, I/O and DB) + `docs/RACE.md` (the runbook the Monday, Wednesday and Friday routines follow). It trades the week's Sunday report from `prep_reports`, so rule changes reach it on the next run.
+- Tables: `races`, `race_state` (engine state, version-pinned), `race_weeks`, `race_trades`, `race_reviews`, `race_lessons` (proposed rule changes; nothing changes a rule until Kyle adopts it). `/race` is private; Kyle's side shows returns and per-trade results, never his account value.
+
 ## Auth & demo
 - `src/lib/auth.ts` + `src/proxy.ts`: single-password gate (`APP_PASSWORD`, `AUTH_SECRET`); login/logout are route handlers under `src/app/auth/`. Server actions re-check via `requireWrite()` in `app/actions.ts`.
 - `DEMO_MODE=true`: no login, read-only, banner. The demo uses a separate Supabase project filled by `scripts/demo-seed.ts` (made-up data; run with `ENV_FILE=.env.demo`, and it refuses to target the project in .env.local).

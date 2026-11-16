@@ -1,6 +1,6 @@
 # PowerWheel rules
 
-**Version 2026.11.16** · the rules in force. They change often; every change gets a new version and a
+**Version 2026.11.16.1** · the rules in force. They change often; every change gets a new version and a
 line in the changelog at the bottom.
 
 This file is the plain-words half of the ruleset. The other half is [`src/lib/rules.ts`](../src/lib/rules.ts),
@@ -138,10 +138,35 @@ The weekly top 5, with the exact put, are logged every Sunday and settled at exp
 (an SPY put one expected move below the price). Judge the picks on win rate, return on collateral and worst loss over
 8 to 12 weeks before giving them real size. Review the weights monthly, not weekly.
 
+## 10. The AI's playbook (paper race)
+
+The AI in the [AI-vs-Kyle race](RACE.md) plays this same game: sections 1 to 9 apply, and it reads the Sunday
+report's scored candidates every week, so a rule change reaches it on its next run. Where Kyle's personal habits
+are a choice rather than a rule, the AI makes its own choice and the race shows which works better. The numbers are
+`AI` in `rules.ts`.
+
+- **Every eligible candidate, not only the top 5.** Best score first, until a cap is hit.
+- **Exposure:** about 1.1x after Monday, up to 1.3x after Wednesday, hard ceiling 1.5x. The Monday reserve is
+  for the Wednesday redeploy.
+- **Size:** up to 15% of account value per ticker (one contract may reach 20%), 30% per theme.
+- **Strike:** one expected move below the price, the Sunday report's target (section 5). For a name scoring 75 or
+  more in a Leading group, 0.8 of an expected move, unless that lands at or under the floor.
+- **Premium:** at least 0.25% of the strike for the week, aiming for about 1% on the best setups.
+- **Fills:** sell at the mid minus 25% of the spread, buy back at the mid plus 25%. A real market as in section 3.
+- **Wednesday:** buy back any put with 50% or more of its premium captured, close any put whose name closed below
+  its floor, then redeploy into the week's candidates.
+- **Assigned shares:** sold on a close below the floor (section 7's stop). Otherwise a covered call at or above
+  both the cost and one expected move over the price, when it pays 0.2% or more. Kyle mostly skips covered calls;
+  the AI uses them so the race can show whether they help.
+
 ---
 
 ## Changelog
 
+- **2026.11.16.1:** section 10, the AI's playbook for the paper race: every eligible candidate, 1.1x after Monday
+  and up to 1.3x after Wednesday, 15% per ticker, 0.8 of an expected move on top-scored names in Leading groups, a
+  Wednesday take-profit at 50%, a stop on assigned shares, and covered calls. Kyle let the AI choose where his habits
+  are choices rather than rules, so the race can show which works better.
 - **2026.11.16:** first version in the repo. Consolidates the Sunday Market Prep rules (rotation map, trend stages,
   the backtest's never-sell zone, picks with weeklies and a real market, no earnings before expiry), the sizing
   framework, profit velocity, close-or-roll on the first close below the floor, the strike rule (one expected move

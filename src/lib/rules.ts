@@ -8,7 +8,7 @@
  * Pure functions only: no Next.js, no database, no network (scripts import this directly).
  */
 
-export const RULES_VERSION = "2026.11.16";
+export const RULES_VERSION = "2026.11.16.1";
 
 export const RULES = {
   /** trading days used for the rotation map and the trend stage (≈ 4 and 13 weeks) */
@@ -45,6 +45,31 @@ export const RULES = {
   },
   top: { count: 5, maxPerSector: 2 },
   techBottom: { smhLow: 448, hygAbove: 77.5, tltAbove: 80.2 },
+} as const;
+
+/**
+ * The AI's playbook in the paper race (RULES.md section 10). Everything in RULES applies; these are the places where
+ * the AI plays the same game differently from Kyle's personal habits, on purpose, so the results can be compared.
+ */
+export const AI = {
+  /** assigned exposure (shares + short put strikes × 100) ÷ account value, by run; never above the ceiling */
+  exposure: { monday: 1.1, wednesday: 1.3, ceiling: 1.5 },
+  /** per ticker and per theme, as a share of account value; one contract may stretch a ticker to `oneContract` */
+  perTicker: 0.15,
+  oneContract: 0.2,
+  perTheme: 0.3,
+  /** strike: this many expected moves below the price; `aggressive` for top-scored names in a Leading group */
+  strike: { moves: 1, aggressiveMoves: 0.8, aggressiveMinScore: 75 },
+  /** fills: sell at mid − share × spread, buy back at mid + share × spread */
+  fillSpreadShare: 0.25,
+  /** skip a put paying less than this share of the strike for the week */
+  minWeekly: 0.0025,
+  /** Wednesday: buy back a put once this much of its premium is captured, then redeploy */
+  takeProfit: 0.5,
+  /** covered calls on assigned shares: at or above max(cost, price + `moves` expected moves), paying at least `minWeekly` */
+  coveredCall: { use: true, moves: 1, minWeekly: 0.002 },
+  /** sell assigned shares on a close below the floor (the prior 20-session low) */
+  stopBelowFloor: true,
 } as const;
 
 // ---------------------------------------------------------------------------

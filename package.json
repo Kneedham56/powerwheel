@@ -9,6 +9,7 @@
     "lint": "eslint",
     "sync": "node --import tsx scripts/sync.ts",
     "prep": "node --import tsx scripts/prep.ts",
+    "race": "node --import tsx scripts/race.ts",
     "typecheck": "next typegen && tsc --noEmit",
     "sql": "node --import tsx scripts/sql.ts",
     "demo:seed": "node --import tsx scripts/demo-seed.ts",
