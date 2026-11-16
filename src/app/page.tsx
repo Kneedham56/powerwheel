@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import {
   Chips,
+  Expandable,
   Flash,
   OptionTypePill,
   PageTitle,
@@ -294,27 +295,6 @@ function fridayOf(monday: string) {
   const d = new Date(`${monday}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + 4);
   return d.toISOString().slice(0, 10);
-}
-
-/** A grid row that expands to show `children` when clicked (or a plain row without children). */
-function Expandable({ cols, cells, children }: { cols: string; cells: ReactNode[]; children?: ReactNode }) {
-  const row = (
-    <>
-      <span className="text-muted transition-transform group-open:rotate-90">{children ? "▸" : ""}</span>
-      {cells.map((c, i) => (
-        <span key={i} className={i === 0 ? "text-left font-medium" : undefined}>
-          {c}
-        </span>
-      ))}
-    </>
-  );
-  if (!children) return <div className={`grow ${cols}`}>{row}</div>;
-  return (
-    <details className="group">
-      <summary className={`grow ${cols}`}>{row}</summary>
-      <div className="drill">{children}</div>
-    </details>
-  );
 }
 
 function GroupTable({

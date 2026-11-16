@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import type { ReactNode } from "react";
 import { RaceChart } from "@/components/race/RaceChart";
-import { PageTitle, Stat, param } from "@/components/ui";
-import { gradeAi, type GradedTrade, type Review, type Trade } from "@/lib/race";
+import { Expandable, OptionTypePill, PageTitle, Stat, StatusPill } from "@/components/ui";
+import { gradeAi, type GradedTrade, type RaceState, type Review, type Trade } from "@/lib/race";
 import { loadRace } from "@/lib/race-db";
 import { AI, RULES_VERSION, dayLabel } from "@/lib/rules";
 
@@ -58,97 +57,213 @@ function Bullets({ title, items }: { title: string; items?: string[] }) {
   );
 }
 
+const WEEK_COLS = "grid-cols-[1rem_minmax(8rem,1.4fr)_repeat(6,minmax(4.5rem,1fr))]";
+
 function GradedTable({ trades }: { trades: GradedTrade[] }) {
-  if (!trades.length) return <p className="text-sm text-muted">No trades finished this week.</p>;
+  if (!trades.length) return <p className="text-xs text-muted">No trades finished this week.</p>;
   return (
-    <div className="overflow-x-auto">
-      <table className="table">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Strike</th>
+          <th>Type</th>
+          <th>Qty</th>
+          <th>Opened → closed</th>
+          <th>Outcome</th>
+          <th>Premium</th>
+          <th>Score</th>
+          <th>Early close vs holding</th>
+        </tr>
+      </thead>
+      <tbody>
+        {trades.map((t, i) => (
+          <tr key={i}>
+            <td className="font-medium">{t.symbol}</td>
+            <td>{px(t.strike)}</td>
+            <td>{t.type === "put" || t.type === "call" ? <OptionTypePill type={t.type} /> : t.type}</td>
+            <td>{t.contracts}</td>
+            <td>
+              {dayLabel(t.opened)} → {dayLabel(t.closed)}
+              {t.rolls ? `, ${t.rolls} roll${t.rolls > 1 ? "s" : ""}` : ""}
+            </td>
+            <td>
+              <span className={`pill ${t.result === "win" ? "bg-gain/15 text-gain" : "bg-loss/15 text-loss"}`}>{t.result}</span>{" "}
+              <span className="text-muted">{t.outcome}</span>
+            </td>
+            <td>{usd(t.premium)}</td>
+            <td className={tone(t.score)}>{usd(t.score)}</td>
+            <td className="!text-left">
+              {t.hold ? (
+                <>
+                  kept {pctU(t.hold.captured, 0)};{" "}
+                  {t.hold.edge === null ? (
+                    <span className="text-muted">hold result not known yet</span>
+                  ) : (
+                    <span className={tone(t.hold.edge)}>
+                      {t.hold.edge >= 0 ? `beat holding by ${usd(t.hold.edge)}` : `holding was ${usd(-t.hold.edge)} better`}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-muted">held to expiry</span>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** The Friday review: headline, what each side should steal, and both sides' finished trades graded the same way. */
+function WeekReview({ r }: { r: Review }) {
+  const n = r.narrative;
+  const side = (title: string, s: Review["ai"], good?: string[], bad?: string[]) => (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 text-xs">
+        <span className="text-sm font-medium">{title}</span>
+        <span className="text-muted tabular-nums">
+          {s.stats.wins}W–{s.stats.losses}L · score <span className={tone(s.stats.score)}>{usd(s.stats.score)}</span>
+          {s.stats.early ? ` · ${s.stats.early_beat_hold} of ${s.stats.early} early closes beat holding` : ""}
+        </span>
+      </div>
+      {(good?.length || bad?.length) ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Bullets title="Good" items={good} />
+          <Bullets title="Bad" items={bad} />
+        </div>
+      ) : null}
+      <GradedTable trades={s.trades} />
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      {n && (
+        <div className="space-y-2">
+          <p className="text-sm font-medium">{n.headline}</p>
+          {n.buybacks && <p className="text-xs text-muted">{n.buybacks}</p>}
+          <div className="grid gap-3 md:grid-cols-2">
+            <Bullets title="Steal from Kyle (for the AI)" items={n.steal_from_kyle} />
+            <Bullets title="Steal from the AI (for Kyle)" items={n.steal_from_ai} />
+          </div>
+        </div>
+      )}
+      {side("AI", r.ai, n?.ai_good, n?.ai_bad)}
+      {side("Kyle", r.kyle, n?.kyle_good, n?.kyle_bad)}
+    </div>
+  );
+}
+
+/** The AI's paper trades in one week, oldest first; the picks the rules skipped collapse into one line. */
+function WeekTrades({ trades }: { trades: Trade[] }) {
+  const done = trades
+    .filter((t) => t.action !== "Skipped")
+    .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id, undefined, { numeric: true }));
+  const skipped = [...new Set(trades.filter((t) => t.action === "Skipped" && t.symbol).map((t) => t.symbol as string))];
+  if (!done.length && !skipped.length) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">AI trades</div>
+      {done.length > 0 && (
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Action</th>
+              <th>Ticker</th>
+              <th>Strike</th>
+              <th>Type</th>
+              <th>Qty</th>
+              <th>Price</th>
+              <th>Cash</th>
+              <th>Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            {done.map((t) => (
+              <tr key={t.id}>
+                <td>{dayLabel(t.date)}</td>
+                <td>
+                  <span className={`pill ${ACTION_CLS[t.action] ?? ""}`}>{t.action}</span>
+                </td>
+                <td className="font-medium">{t.symbol}</td>
+                <td>{px(t.strike)}</td>
+                <td>{t.type === "put" || t.type === "call" ? <OptionTypePill type={t.type} /> : t.type === "shares" ? "Shares" : ""}</td>
+                <td>{px(t.qty)}</td>
+                <td>{px(t.price)}</td>
+                <td className={tone(t.cash)}>{t.cash ? usd(t.cash) : ""}</td>
+                <td className="max-w-md !text-left !whitespace-normal text-muted">{t.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {skipped.length > 0 && <p className="text-xs text-muted">Skipped by the rules: {skipped.join(", ")}</p>}
+    </div>
+  );
+}
+
+function OpenPositions({ state }: { state: RaceState }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">Open now</div>
+      <table>
         <thead>
           <tr>
-            <th>Trade</th>
-            <th>Outcome</th>
-            <th className="num">Premium</th>
-            <th className="num">Score</th>
-            <th>Early close vs holding</th>
+            <th>Position</th>
+            <th>Ticker</th>
+            <th>Theme</th>
+            <th>Qty</th>
+            <th>Strike or cost</th>
+            <th>Expires</th>
+            <th>Sold at or mark</th>
+            <th>Value or collateral</th>
           </tr>
         </thead>
         <tbody>
-          {trades.map((t, i) => (
-            <tr key={i}>
+          {state.options.map((o) => (
+            <tr key={o.id}>
               <td>
-                {t.symbol} {px(t.strike)} {t.type} ×{t.contracts}
-                <span className="ml-1 text-xs text-muted">
-                  {dayLabel(t.opened)} → {dayLabel(t.closed)}
-                  {t.rolls ? `, ${t.rolls} roll${t.rolls > 1 ? "s" : ""}` : ""}
-                </span>
+                <OptionTypePill type={o.type} />
               </td>
-              <td>
-                <span className={`pill ${t.result === "win" ? "bg-gain/15 text-gain" : "bg-loss/15 text-loss"}`}>{t.result}</span> <span className="text-xs text-muted">{t.outcome}</span>
-              </td>
-              <td className="num">{usd(t.premium)}</td>
-              <td className={`num ${tone(t.score)}`}>{usd(t.score)}</td>
-              <td className="text-xs">
-                {t.hold ? (
-                  <>
-                    kept {pctU(t.hold.captured, 0)} of the premium;{" "}
-                    {t.hold.edge === null ? (
-                      <span className="text-muted">hold result not known yet</span>
-                    ) : (
-                      <span className={tone(t.hold.edge)}>{t.hold.edge >= 0 ? `beat holding by ${usd(t.hold.edge)}` : `holding was ${usd(-t.hold.edge)} better`}</span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-muted">held to expiry</span>
-                )}
-              </td>
+              <td className="font-medium">{o.symbol}</td>
+              <td>{o.theme}</td>
+              <td>{o.contracts}</td>
+              <td>{px(o.strike)}</td>
+              <td>{dayLabel(o.expiration)}</td>
+              <td>{px(o.price)}</td>
+              <td>{o.type === "put" ? usd(o.strike * 100 * o.contracts) : "—"}</td>
             </tr>
           ))}
+          {state.lots.map((l) => (
+            <tr key={l.id}>
+              <td>
+                <span className="pill border border-border">Shares</span>
+              </td>
+              <td className="font-medium">{l.symbol}</td>
+              <td>{l.theme}</td>
+              <td>{l.shares}</td>
+              <td>{px(l.cost)}</td>
+              <td>—</td>
+              <td>{px(l.mark)}</td>
+              <td>{usd(l.shares * l.mark)}</td>
+            </tr>
+          ))}
+          <tr>
+            <td>Cash</td>
+            <td colSpan={6} className="!text-left text-muted">
+              below zero when assigned shares are bought on margin
+            </td>
+            <td className={tone(state.cash)}>{usd(state.cash)}</td>
+          </tr>
         </tbody>
       </table>
     </div>
   );
 }
 
-function ReviewCard({ r }: { r: Review }) {
-  const n = r.narrative;
-  const side = (title: string, s: Review["ai"], good?: string[], bad?: string[]) => (
-    <div className="card space-y-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 className="font-semibold">{title}</h3>
-        <div className="text-xs text-muted tabular-nums">
-          {s.stats.wins}–{s.stats.losses} · score <span className={tone(s.stats.score)}>{usd(s.stats.score)}</span>
-          {s.stats.early ? ` · ${s.stats.early_beat_hold} of ${s.stats.early} early closes beat holding` : ""}
-        </div>
-      </div>
-      <Bullets title="Good" items={good} />
-      <Bullets title="Bad" items={bad} />
-      <GradedTable trades={s.trades} />
-    </div>
-  );
-  return (
-    <div className="space-y-3">
-      {n ? (
-        <div className="card space-y-3">
-          <p className="font-medium">{n.headline}</p>
-          {n.buybacks && <p className="text-sm text-muted">{n.buybacks}</p>}
-          <div className="grid gap-4 md:grid-cols-2">
-            <Bullets title="Steal from Kyle (for the AI)" items={n.steal_from_kyle} />
-            <Bullets title="Steal from the AI (for Kyle)" items={n.steal_from_ai} />
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-muted">The written review lands after the Friday run.</p>
-      )}
-      <div className="grid gap-4 xl:grid-cols-2">
-        {side("AI", r.ai, n?.ai_good, n?.ai_bad)}
-        {side("Kyle", r.kyle, n?.kyle_good, n?.kyle_bad)}
-      </div>
-    </div>
-  );
-}
-
-export default async function RacePage({ searchParams }: PageProps<"/race">) {
-  const sp = await searchParams;
+export default async function RacePage() {
   const data = await loadRace();
   if (!data) {
     return (
@@ -165,11 +280,11 @@ export default async function RacePage({ searchParams }: PageProps<"/race">) {
   const wins = graded.filter((g) => g.result === "win").length;
   const leader = last && last.week > 0 && last.opp_return !== null ? (last.ai_return > last.opp_return ? "The AI is ahead." : last.ai_return < last.opp_return ? "Kyle is ahead." : "They are tied.") : null;
 
-  const reviewWeek = Number(param(sp, "review") ?? reviews[0]?.week ?? 0);
-  const review = reviews.find((r) => r.week === reviewWeek) ?? reviews[0];
-  const showSkips = param(sp, "skips") === "1";
-  const log = trades.filter((t) => showSkips || t.action !== "Skipped").slice(0, 150);
-  const openLessons = lessons.filter((l) => l.status === "proposed");
+  const byWeek = new Map<number, Trade[]>();
+  for (const t of trades as Trade[]) byWeek.set(t.week, [...(byWeek.get(t.week) ?? []), t]);
+  const openPremium = state?.current
+    ? (byWeek.get(state.current.week) ?? []).filter((t) => t.action === "Sold put" || t.action === "Sold call").reduce((a, t) => a + (t.cash ?? 0), 0)
+    : 0;
 
   return (
     <div className="space-y-8">
@@ -204,212 +319,92 @@ export default async function RacePage({ searchParams }: PageProps<"/race">) {
         </div>
       </Section>
 
-      {review && (
-        <Section
-          id="review"
-          title={`Week ${review.week} review`}
-          note="Every trade that finished that week, on both sides, scored the same way: net premium, less how far the stock ended past the strike when assigned. Early closes are checked against what holding to expiry would have done."
-        >
-          {reviews.length > 1 && (
-            <div className="flex flex-wrap gap-2">
-              {reviews.map((r) => (
-                <Link key={r.week} href={`/race?review=${r.week}#review`} className={`pill ${r.week === review.week ? "bg-accent/15 text-accent" : "bg-foreground/10 text-muted"}`}>
-                  Week {r.week}
-                </Link>
-              ))}
-            </div>
+      <section id="weeks" className="card scroll-mt-4 overflow-x-auto">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="font-medium">Weekly detail</h2>
+          <span className="text-xs text-muted">click a week to see its review and trades</span>
+        </div>
+        <div className="gtable">
+          <div className={`ghead ${WEEK_COLS}`}>
+            <span />
+            <span className="text-left">Week</span>
+            <span>AI week</span>
+            <span>AI total</span>
+            <span>Kyle week</span>
+            <span>Kyle total</span>
+            <span>AI premium</span>
+            <span>AI exposure</span>
+          </div>
+          {state?.current && !weeks.some((w) => w.week === state.current!.week) && (
+            <Expandable
+              cols={WEEK_COLS}
+              cells={[
+                <span key="w">
+                  Wk {state.current.week} · {dayLabel(state.current.expiry)} <StatusPill status="open" label="open" />
+                </span>,
+                "—",
+                "—",
+                "—",
+                "—",
+                usd(openPremium),
+                "",
+              ]}
+            >
+              <div className="space-y-4">
+                <WeekTrades trades={byWeek.get(state.current.week) ?? []} />
+                <OpenPositions state={state} />
+              </div>
+            </Expandable>
           )}
-          <ReviewCard r={review} />
-        </Section>
-      )}
-
-      <Section id="lessons" title="Lessons and proposed rules" note="What the reviews say to keep, steal or fix. Proposals only: a rule changes when Kyle adopts it in RULES.md.">
-        {openLessons.length ? (
-          <div className="card overflow-x-auto">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Week</th>
-                  <th>For</th>
-                  <th>Kind</th>
-                  <th>Lesson</th>
-                </tr>
-              </thead>
-              <tbody>
-                {openLessons.map((l) => (
-                  <tr key={l.id}>
-                    <td>{l.week}</td>
-                    <td>{l.side === "ai" ? "AI" : l.side === "kyle" ? "Kyle" : "Both"}</td>
-                    <td>
-                      <span className={`pill ${l.kind === "rule" ? "bg-accent/15 text-accent" : "bg-foreground/10 text-muted"}`}>{l.kind}</span>
-                    </td>
-                    <td className="whitespace-normal">{l.text}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className="text-sm text-muted">None yet. The first ones come with the next Friday review.</p>
-        )}
-      </Section>
-
-      <Section id="positions" title="AI open positions" note="Short puts show their collateral (strike × 100), which counts toward exposure as if assigned. Shares came from assignments and are marked at the last price.">
-        <div className="card overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Position</th>
-                <th>Symbol</th>
-                <th>Theme</th>
-                <th className="num">Qty</th>
-                <th className="num">Strike or cost</th>
-                <th>Expires</th>
-                <th className="num">Sold at or mark</th>
-                <th className="num">Value or collateral</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(state?.options ?? []).map((o) => (
-                <tr key={o.id}>
-                  <td>Short {o.type}</td>
-                  <td>{o.symbol}</td>
-                  <td>{o.theme}</td>
-                  <td className="num">{o.contracts}</td>
-                  <td className="num">{px(o.strike)}</td>
-                  <td>{dayLabel(o.expiration)}</td>
-                  <td className="num">{px(o.price)}</td>
-                  <td className="num">{o.type === "put" ? usd(o.strike * 100 * o.contracts) : "—"}</td>
-                </tr>
-              ))}
-              {(state?.lots ?? []).map((l) => (
-                <tr key={l.id}>
-                  <td>Shares</td>
-                  <td>{l.symbol}</td>
-                  <td>{l.theme}</td>
-                  <td className="num">{l.shares}</td>
-                  <td className="num">{px(l.cost)}</td>
-                  <td>—</td>
-                  <td className="num">{px(l.mark)}</td>
-                  <td className="num">{usd(l.shares * l.mark)}</td>
-                </tr>
-              ))}
-              <tr>
-                <td>Cash</td>
-                <td colSpan={6} className="text-muted">
-                  goes below zero when assigned shares are bought on margin
-                </td>
-                <td className={`num ${tone(state?.cash)}`}>{usd(state?.cash)}</td>
-              </tr>
-            </tbody>
-          </table>
+          {[...weeks].reverse().map((w) => {
+            const r = reviews.find((x) => x.week === w.week);
+            const wk = byWeek.get(w.week) ?? [];
+            const ls = lessons.filter((l) => l.week === w.week && l.status !== "rejected");
+            const has = w.week > 0 && (r || wk.length || ls.length || w.note);
+            return (
+              <Expandable
+                key={w.week}
+                cols={WEEK_COLS}
+                cells={[
+                  w.week === 0 ? `Start · ${dayLabel(w.date)}` : `Wk ${w.week} · ${dayLabel(w.date)}`,
+                  <span key="a" className={tone(w.ai_week_return)}>{w.week ? spct(w.ai_week_return) : "—"}</span>,
+                  <span key="b" className={tone(w.ai_return)}>{spct(w.ai_return)}</span>,
+                  <span key="c" className={tone(w.opp_week_return)}>{w.week ? spct(w.opp_week_return) : "—"}</span>,
+                  <span key="d" className={tone(w.opp_return)}>{spct(w.opp_return)}</span>,
+                  w.week ? usd(w.premium) : "—",
+                  w.leverage ? `${w.leverage.toFixed(2)}x` : "—",
+                ]}
+              >
+                {has ? (
+                  <div className="space-y-4">
+                    {w.note && <p className="text-xs text-muted">{w.note}</p>}
+                    {r ? <WeekReview r={r} /> : <p className="text-xs text-muted">No written review for this week.</p>}
+                    {ls.length > 0 && (
+                      <div>
+                        <div className="mb-1 text-xs font-medium text-muted">Lessons (proposals until Kyle adopts them in RULES.md)</div>
+                        <ul className="list-disc space-y-1 pl-5 text-sm">
+                          {ls.map((l) => (
+                            <li key={l.id}>
+                              <span className="text-xs text-muted">{l.side === "ai" ? "AI" : l.side === "kyle" ? "Kyle" : "Both"} · {l.kind}:</span> {l.text}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <WeekTrades trades={wk} />
+                  </div>
+                ) : undefined}
+              </Expandable>
+            );
+          })}
         </div>
-      </Section>
+      </section>
 
-      <Section id="weeks" title="Week by week">
-        <div className="card overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Week</th>
-                <th>Date</th>
-                <th className="num">AI value</th>
-                <th className="num">AI week</th>
-                <th className="num">AI total</th>
-                <th className="num">Kyle week</th>
-                <th className="num">Kyle total</th>
-                <th className="num">AI premium</th>
-                <th className="num">AI exposure</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...weeks].reverse().map((w) => (
-                <tr key={w.week}>
-                  <td>{w.week === 0 ? "Start" : w.label}</td>
-                  <td>{dayLabel(w.date)}</td>
-                  <td className="num">{usd(w.ai_value)}</td>
-                  <td className={`num ${tone(w.ai_week_return)}`}>{spct(w.ai_week_return)}</td>
-                  <td className={`num ${tone(w.ai_return)}`}>{spct(w.ai_return)}</td>
-                  <td className={`num ${tone(w.opp_week_return)}`}>{spct(w.opp_week_return)}</td>
-                  <td className={`num ${tone(w.opp_return)}`}>{spct(w.opp_return)}</td>
-                  <td className="num">{usd(w.premium)}</td>
-                  <td className="num">{w.leverage ? `${w.leverage.toFixed(2)}x` : "—"}</td>
-                  <td className="max-w-md whitespace-normal text-xs text-muted">{w.note}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-
-      <Section
-        id="trades"
-        title="AI trade log"
-        note={
-          <>
-            Every paper sale, buyback, expiry, assignment, call-away and stop, newest first.{" "}
-            <Link href={showSkips ? "/race#trades" : "/race?skips=1#trades"} className="text-accent hover:underline">
-              {showSkips ? "Hide" : "Show"} the picks the rules skipped
-            </Link>
-            .
-          </>
-        }
-      >
-        <div className="card overflow-x-auto">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Action</th>
-                <th>Symbol</th>
-                <th className="num">Strike</th>
-                <th className="num">Qty</th>
-                <th className="num">Price</th>
-                <th className="num">Cash</th>
-                <th>Why</th>
-              </tr>
-            </thead>
-            <tbody>
-              {log.map((t) => (
-                <tr key={t.id}>
-                  <td>{dayLabel(t.date)}</td>
-                  <td>
-                    <span className={`pill ${ACTION_CLS[t.action] ?? ""}`}>{t.action}</span>
-                  </td>
-                  <td>
-                    {t.symbol} <span className="text-xs text-muted">{t.type}</span>
-                  </td>
-                  <td className="num">{px(t.strike)}</td>
-                  <td className="num">{px(t.qty)}</td>
-                  <td className="num">{px(t.price)}</td>
-                  <td className={`num ${tone(t.cash)}`}>{t.cash ? usd(t.cash) : ""}</td>
-                  <td className="max-w-xl whitespace-normal text-xs text-muted">{t.note}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Section>
-
-      <Section id="playbook" title="The AI's playbook" note="The full ruleset applies (docs/RULES.md). These are the AI's own choices where Kyle's habits are a choice, not a rule (section 10).">
-        <div className="card grid gap-x-8 gap-y-2 text-sm md:grid-cols-2">
-          <div>
-            Exposure: {AI.exposure.monday}x after Monday, up to {AI.exposure.wednesday}x after Wednesday, ceiling {AI.exposure.ceiling}x
-          </div>
-          <div>
-            Size: {pctU(AI.perTicker, 0)} per ticker (one contract up to {pctU(AI.oneContract, 0)}), {pctU(AI.perTheme, 0)} per theme
-          </div>
-          <div>
-            Strike: {AI.strike.moves} expected move below the price; {AI.strike.aggressiveMoves} for scores of {AI.strike.aggressiveMinScore}+ in a Leading group
-          </div>
-          <div>Premium: at least {pctU(AI.minWeekly, 2)} of the strike for the week</div>
-          <div>Fills: mid ∓ {pctU(AI.fillSpreadShare, 0)} of the spread</div>
-          <div>Wednesday: buy back at {pctU(AI.takeProfit, 0)} captured or a close below the floor, then redeploy</div>
-          <div>Shares: sold on a close below the floor; covered calls at or above cost and one expected move</div>
-          <div>Runs: Monday 7:00, Wednesday 7:00, Friday 1:15 Pacific</div>
-        </div>
-      </Section>
+      <p className="text-xs text-muted">
+        The AI&apos;s playbook: {AI.exposure.monday}x exposure after Monday, up to {AI.exposure.wednesday}x after Wednesday (ceiling {AI.exposure.ceiling}x), {pctU(AI.perTicker, 0)} per ticker, a
+        Wednesday buyback at {pctU(AI.takeProfit, 0)} captured, stops on assigned shares and covered calls. Full rules in docs/RULES.md section 10. Runs Monday 7:00, Wednesday
+        7:00 and Friday 1:15 Pacific.
+      </p>
     </div>
   );
 }
