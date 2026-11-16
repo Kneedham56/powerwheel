@@ -9,6 +9,8 @@ export async function proxy(request: NextRequest) {
   if (!authEnabled()) return NextResponse.next();
   const path = request.nextUrl.pathname;
   if (path === "/login" || path === "/auth/login" || path === "/api/keepalive") return NextResponse.next();
+  // the weekly prep is public on purpose: market and watchlist data only
+  if (path === "/prep") return NextResponse.next();
 
   if (await isValidSession(request.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next();
 

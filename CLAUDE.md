@@ -25,6 +25,11 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - `scripts/sync.ts` + `docs/SYNC.md` — Robinhood import (idempotent via leg ids in `transactions.broker_ref`).
 - `src/lib/csv-import.ts` + `/import` page + `npm run sync -- csv <file> --account <name> [--dry-run]` — import a Robinhood *Account activity report* CSV (one file = one account; no AI or connector needed, so other people can use it). Pure planner (rolls are guessed from same-day trades; same-day fills of a contract merge into one position) + executor over `trades.ts`. Idempotent via a content hash in `broker_ref`. Cash rows (interest, margin interest, deposits) and share buys not from an assignment aren't tracked. Validated against the order-based sync: contract counts match exactly; win rate / realized P&L within ~1–3% (the CSV includes fees, the order sync doesn't).
 
+## Rules and weekly prep
+- **One ruleset, two halves:** `docs/RULES.md` (plain words) and `src/lib/rules.ts` (thresholds, weights, indicator math, scoring). Same `RULES_VERSION` in both. Every decision-maker reads them: the weekly prep now, the AI-vs-Kyle race next. Change a rule → edit both, bump the version, add a changelog line.
+- **Weekly prep:** `src/lib/prep.ts` (pure builder) + `scripts/prep.ts` (`npm run prep -- …`, I/O and DB) + `docs/PREP.md` (the runbook the Sunday and Wednesday routines follow). Reports go to `prep_reports` (jsonb), the top 5 picks plus an SPY baseline to `pick_log`, settled at expiry the next Sunday.
+- **`/prep` is public** (exempted in `src/proxy.ts`): market and watchlist data only. Never put anything about an account in a report (holdings, sizes, leverage, P&L).
+
 ## Auth & demo
 - `src/lib/auth.ts` + `src/proxy.ts`: single-password gate (`APP_PASSWORD`, `AUTH_SECRET`); login/logout are route handlers under `src/app/auth/`. Server actions re-check via `requireWrite()` in `app/actions.ts`.
 - `DEMO_MODE=true`: no login, read-only, banner. The demo uses a separate Supabase project filled by `scripts/demo-seed.ts` (made-up data; run with `ENV_FILE=.env.demo`, and it refuses to target the project in .env.local).
