@@ -482,7 +482,7 @@ function Picks({ r }: { r: SundayReport }) {
               <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-xs tabular-nums">
                 <dt className="text-muted">Premium</dt>
                 <dd className="text-right">
-                  {px(p.mid)} · {pctU(p.premium_weekly, 2)}/wk
+                  {p.mid.toFixed(3)} · {pctU(p.premium_weekly, 2)}/wk
                 </dd>
                 <dt className="text-muted">Cushion</dt>
                 <dd className="text-right">{pctU(p.cushion)}</dd>

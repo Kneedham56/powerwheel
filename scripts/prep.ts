@@ -308,7 +308,7 @@ function cmdQuotePlan(path: string) {
 async function cmdContext(path: string) {
   const inp = sundayInputs(path, false);
   const r = buildSunday(inp);
-  const last = await lastWeekResults();
+  const last = await lastWeekResults(r.week_of);
   console.log(JSON.stringify({ ...sundayContext(r), last_week_picks: last }, null, 2));
 }
 
@@ -319,7 +319,7 @@ async function cmdBuild(path: string, dryRun: boolean) {
   const settled = await settleOpenPicks(inp.bars, dryRun);
   console.log(`rules ${RULES_VERSION} · week of ${report.week_of} · data through ${report.as_of} · expiry ${report.expiry}`);
   console.log(`${report.candidates.length} names ranked, ${report.picks.length} picks${report.baseline ? " + SPY baseline" : ""}`);
-  for (const p of report.picks) console.log(`  ${p.rank}. ${p.symbol} ${p.strike}p ${p.expiry} mid ${p.mid.toFixed(2)} (${(p.premium_weekly * 100).toFixed(2)}%/wk) score ${p.score}`);
+  for (const p of report.picks) console.log(`  ${p.rank}. ${p.symbol} ${p.strike}p ${p.expiry} mid ${p.mid.toFixed(3)} (${(p.premium_weekly * 100).toFixed(2)}%/wk) score ${p.score}`);
   console.log(`settled ${settled} logged picks from earlier weeks`);
   if (dryRun) {
     console.log("dry run: nothing saved");
@@ -436,10 +436,16 @@ async function settleOpenPicks(bars: Record<string, Bar[]>, dryRun: boolean) {
   return n;
 }
 
-async function lastWeekResults() {
+/** Picks logged by earlier weeks' reports (never the week being built). */
+async function lastWeekResults(weekOf: string) {
   try {
     const client = createAdminClient();
-    const { data } = await client.from("pick_log").select("symbol, is_baseline, strike, expiration, premium, outcome, pnl, roc, settled_at").order("expiration", { ascending: false }).limit(12);
+    const { data } = await client
+      .from("pick_log")
+      .select("week_of, symbol, is_baseline, strike, expiration, premium, outcome, pnl, roc, settled_at")
+      .lt("week_of", weekOf)
+      .order("expiration", { ascending: false })
+      .limit(12);
     return data ?? [];
   } catch {
     return [];

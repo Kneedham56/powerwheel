@@ -495,8 +495,11 @@ export function buildSunday(inp: SundayInputs): SundayReport {
     if (qs.length && !chosen) flags.push("No real market");
     if (chosen && chosen.expiry !== expiry) flags.push("No weekly that Friday");
     if (!bigEnough && call.pref <= 3) flags.push("Under $20B: watch only");
+    // a fund is the group itself: only Leading or Improving funds take new puts
+    const fundOut = !!fund && groupQ !== "Leading" && groupQ !== "Improving";
+    if (fundOut && call.pref <= 3) flags.push(`Fund is ${groupQ ?? "unranked"}: no new puts`);
 
-    const eligible = call.pref <= 3 && bigEnough && !(qs.length && !chosen) && !(chosen && chosen.expiry !== expiry);
+    const eligible = call.pref <= 3 && bigEnough && !fundOut && !(qs.length && !chosen) && !(chosen && chosen.expiry !== expiry);
     let liquidity: number | null = null;
     if (chosen) {
       const mid = midOf(chosen)!;
@@ -508,7 +511,7 @@ export function buildSunday(inp: SundayInputs): SundayReport {
     if (sc?.checkWhy) flags.push("Check why: over 2% a week");
 
     if (source === "Scan" && !eligible) continue; // scan names only show up when they are picks
-    if (source === "Fund" && call.pref > 3) continue; // funds only when they qualify; the map shows the rest
+    if (source === "Fund" && (call.pref > 3 || fundOut)) continue; // funds only when they qualify; the map shows the rest
 
     const w = watch.get(symbol);
     candidates.push({
@@ -543,7 +546,10 @@ export function buildSunday(inp: SundayInputs): SundayReport {
       flags,
     });
   }
-  candidates.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || a.pref - b.pref || (b.rs13 ?? -9) - (a.rs13 ?? -9));
+  // sellable picks first (best score on top), then names with a good trend that can't be sold this week, then the rest
+  candidates.sort(
+    (a, b) => Number(b.eligible) - Number(a.eligible) || (b.score ?? -1) - (a.score ?? -1) || a.pref - b.pref || (b.rs13 ?? -9) - (a.rs13 ?? -9),
+  );
 
   // top picks: eligible, quoted, scored, at most 2 per theme
   const pickable = candidates
@@ -656,7 +662,7 @@ export function sundayContext(r: SundayReport) {
     watchlist_week_best: [...wl].sort((a, b) => (b.week ?? 0) - (a.week ?? 0)).slice(0, 5).map((c) => `${c.symbol} ${pctStr(c.week)}`),
     watchlist_week_worst: [...wl].sort((a, b) => (a.week ?? 0) - (b.week ?? 0)).slice(0, 5).map((c) => `${c.symbol} ${pctStr(c.week)}`),
     watchlist_never_sell: wl.filter((c) => c.pref === 10).map((c) => c.symbol),
-    picks: r.picks.map((p) => `${p.rank}. ${p.symbol} ${p.strike}p ${p.expiry} @ ${p.mid.toFixed(2)} (${pctStr(p.premium_weekly, 2)}/wk, score ${p.score})`),
+    picks: r.picks.map((p) => `${p.rank}. ${p.symbol} ${p.strike}p ${p.expiry} @ ${p.mid.toFixed(3)} (${pctStr(p.premium_weekly, 2)}/wk, score ${p.score})`),
     tech_bottom: r.tech_bottom.map((c) => `${c.pass ? "✓" : "✗"} ${c.label}: ${c.detail}`),
   };
 }

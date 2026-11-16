@@ -65,7 +65,11 @@ A name is a pick when all of these hold:
 3. It has weekly options with a real market at the strike: a bid above zero, a bid/ask spread no wider than 20% of
    the mid (or $0.10 for cheap options), and at least 100 contracts open.
 4. No earnings before the expiration (earnings on expiration day after the close is fine).
-5. Funds of any size; stocks only at $20B market cap or more.
+5. Funds of any size, but only while Leading or Improving on the rotation map; stocks only at $20B market cap or
+   more (a stock's group quadrant counts in its score instead).
+
+Picks that can be sold rank first, by score. Names with a good trend that can't be sold this week (earnings, no
+weeklies, no real market, too small) come next, then everything else.
 
 ## 4. Scoring and ranking
 
