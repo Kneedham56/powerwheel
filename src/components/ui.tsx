@@ -178,3 +178,24 @@ export function OptionTypePill({ type }: { type: "put" | "call" }) {
 export function StreamDot({ color }: { color?: string | null }) {
   return <span className="mr-1.5 inline-block h-2 w-2 rounded-full" style={{ background: color ?? "#888" }} />;
 }
+
+/** A grid row that expands to show `children` when clicked (or a plain row without children). */
+export function Expandable({ cols, cells, children }: { cols: string; cells: ReactNode[]; children?: ReactNode }) {
+  const row = (
+    <>
+      <span className="text-muted transition-transform group-open:rotate-90">{children ? "▸" : ""}</span>
+      {cells.map((c, i) => (
+        <span key={i} className={i === 0 ? "text-left font-medium" : undefined}>
+          {c}
+        </span>
+      ))}
+    </>
+  );
+  if (!children) return <div className={`grow ${cols}`}>{row}</div>;
+  return (
+    <details className="group">
+      <summary className={`grow ${cols}`}>{row}</summary>
+      <div className="drill">{children}</div>
+    </details>
+  );
+}
