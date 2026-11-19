@@ -32,7 +32,8 @@ If `greeks/eod` is available, it replaces the plain quote endpoint, since it ret
 ## Commands
 
 ```
-npm run skynet -- universe            # symbol list + expiration history for every symbol (about 15 min, free)
+npm run skynet -- universe            # symbol list + expiration history for every symbol (about 40 min on free, done once)
+npm run skynet -- priority            # write data/priority.txt from the app DB: index ETFs, traded tickers, prep-report names
 npm run skynet -- plan                # which symbols a pull covers, with a time estimate
 npm run skynet -- pull                # the download (resumable; rerun the same command after any stop)
 npm run skynet -- ref                 # Cboe VIX family, FRED T-bill, Theta rates
@@ -48,13 +49,28 @@ npm run skynet -- status              # what's stored, per endpoint
 - `--min-weekly-months N`: how strict the weekly filter is (default 3).
 - `--no-oi` / `--no-stock`: skip open interest or stock bars.
 
+**Priority:** `data/priority.txt` is pulled before the rest of the universe, top to bottom. `priority` builds it from:
+- SPY, QQQ and IWM
+- every ticker Kyle has traded, most-traded first
+- every symbol that has appeared in a prep report
+
+The file is local, since `data/` is gitignored, so the traded list never reaches the repo. You can edit it by hand. Each symbol is pulled for the whole window before the next one starts, so the names at the top are complete and usable while the rest keep downloading.
+
+- `--priority-only` stops after the priority list.
+- `--no-priority` ignores it.
+
+As of 2026-11-19, at 4 requests at a time and about 1 second each:
+- the index ETFs plus traded names (top 45): about 12 hours
+- the whole priority list (135): about 2 days
+- everything (about 1,365): about 17 days
+
 **Universe:** every symbol that had weekly options, meaning 3+ expirations in a month, in at least 3 months of the window. It's worked out from each symbol's expiration history, so names that were delisted later are included. SPY, QQQ and IWM go first, then names ordered by how many months they had weeklies. Cash-settled index options (SPX, NDX, RUT, VIX and similar) are excluded.
 
 Ctrl-C stops after the requests in flight finish. Each day's rows and its log entry are written in one transaction, so a crash or kill loses nothing and resumes cleanly.
 
 ## The paid month
 
-1. Run the free steps first, so no paid time goes to setup: `universe`, `ref`, and a small `pull` to confirm the terminal works.
+1. Run the free steps first, so no paid time goes to setup: `universe`, `priority`, `ref`, and a small `pull` to confirm the terminal works.
 2. Subscribe to **Options Standard, billed monthly**. Restart the Theta Terminal and check that the log says `Options: STANDARD`.
 3. Smoke test: `npm run skynet -- pull --symbols SPY --from 2016-01-04 --to 2016-01-08`. Then `status`: `option_greeks` and `option_oi` should have rows, and `underlying_price` and `implied_vol` should be filled in.
 4. `npm run skynet -- plan` gives the estimate. Then start `npm run skynet -- pull` in a terminal tab and leave it. If it stops, because of a reboot, a terminal restart or too many errors, just rerun it.
