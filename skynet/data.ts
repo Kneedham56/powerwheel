@@ -279,22 +279,87 @@ async function plan(store: Store) {
   const u = await targets(store, from, to);
   const avg = (await store.all<{ ms: number | null }>(`SELECT avg(ms) AS ms FROM fetch_log WHERE endpoint LIKE 'option_%' AND status = 'ok'`))[0].ms ?? 1000;
   const conc = Number(opt("concurrency", "4"));
+  const calendar = await tradingCalendar(store, from, to);
   const est = (list: USym[], label: string) => {
-    let days = 0;
-    for (const s of list) {
-      const { start, end } = symRange(s, from, to);
-      if (start <= end) days += weekdaysDesc(start, end).length;
-    }
-    const calls = days * (flag("no-oi") ? 1 : 2);
-    console.log(`${label}: ${fmtN(list.length)} symbols, ${fmtN(days)} symbol-days, ~${fmtN(calls)} option requests, about ${fmtDur((calls * avg) / conc)}`);
+    const parts = (["core", "rest", "all"] as DaysMode[]).map((m) => {
+      let calls = 0;
+      for (const s of list) {
+        const { start, end } = symRange(s, from, to);
+        const sc = schedule(calendar.filter((d) => d >= start && d <= end), m);
+        calls += sc.quotes.length + (flag("no-oi") ? 0 : sc.oi.length);
+      }
+      return `${m} ~${fmtN(calls)} req, ${fmtDur((calls * avg) / conc)}`;
+    });
+    console.log(`${label} (${fmtN(list.length)} symbols): ${parts.join(" | ")}`);
   };
   console.log(`Window ${from} .. ${to}, at ~${Math.round(avg)}ms per request and ${conc} at a time (before skipping what's stored):`);
   const pri = new Set(readPriority());
   const head = u.filter((s) => pri.has(s.symbol));
-  if (head.length) est(head, "  priority list first");
+  if (head.length) est(head, "  priority list");
   est(u, "  everything");
   console.log(u.slice(0, 40).map((s) => `${s.symbol}(${s.weekly_months})`).join(" "));
   if (u.length > 40) console.log(`… and ${fmtN(u.length - 40)} more`);
+}
+
+// ---------------------------------------------------------------------------
+// trading days and the two-pass schedule
+// ---------------------------------------------------------------------------
+
+/** Trading days, newest first: SPY's Alpaca bars when present (skips holidays), else weekdays. */
+async function tradingCalendar(store: Store, from: string, to: string): Promise<string[]> {
+  const spy = join(PARQUET_DIR, "stock_bars", "SPY.parquet");
+  if (existsSync(spy)) {
+    const rows = await store.all<{ d: string }>(
+      `SELECT DISTINCT strftime(date, '%Y-%m-%d') AS d FROM read_parquet(${q(spy.replace(/\\/g, "/"))}) WHERE adjustment = 'raw' ORDER BY 1 DESC`,
+    );
+    const last = rows[0]?.d ?? "";
+    // Days after the last bar (bars not refreshed yet) fall back to weekdays.
+    const tail = last < to ? weekdaysDesc(addDays(last, 1) > from ? addDays(last, 1) : from, to) : [];
+    return [...tail, ...rows.map((r) => r.d).filter((d) => d >= from && d <= to)];
+  }
+  return weekdaysDesc(from, to);
+}
+
+/**
+ * The days the wheel engine trades on: each week's first trading day (entry), its Wednesday
+ * (take-profit and redeploy; the nearest day if Wednesday is a holiday) and its last trading day
+ * (expiry and rolls). `entry` is the first day alone.
+ */
+function coreDays(days: string[]) {
+  const weeks = new Map<string, string[]>();
+  for (const d of days) {
+    const dt = new Date(`${d}T12:00:00Z`);
+    const monday = addDays(d, -((dt.getUTCDay() + 6) % 7));
+    (weeks.get(monday) ?? weeks.set(monday, []).get(monday)!).push(d);
+  }
+  const core = new Set<string>();
+  const entry = new Set<string>();
+  for (const [monday, ds] of weeks) {
+    const sorted = [...ds].sort();
+    const wed = addDays(monday, 2);
+    const mid = sorted.reduce((a, b) => (Math.abs(Date.parse(b) - Date.parse(wed)) < Math.abs(Date.parse(a) - Date.parse(wed)) ? b : a));
+    core.add(sorted[0]).add(mid).add(sorted[sorted.length - 1]);
+    entry.add(sorted[0]);
+  }
+  return { core, entry };
+}
+
+type DaysMode = "all" | "core" | "rest";
+
+/** Which days get quotes/greeks and which get open interest, for a pass. core + rest = all, no overlap. */
+function schedule(days: string[], mode: DaysMode) {
+  if (mode === "all") return { quotes: days, oi: days };
+  const { core, entry } = coreDays(days);
+  return mode === "core"
+    ? { quotes: days.filter((d) => core.has(d)), oi: days.filter((d) => entry.has(d)) }
+    : { quotes: days.filter((d) => !core.has(d)), oi: days.filter((d) => !entry.has(d)) };
+}
+
+/** `--days core,rest` runs the passes in order in one process, so one Ctrl-C stops them all. */
+function daysModes(): DaysMode[] {
+  const ms = opt("days", "all")!.split(",").map((s) => s.trim());
+  for (const m of ms) if (m !== "all" && m !== "core" && m !== "rest") throw new Error(`--days must be all, core, rest or a list like core,rest (got ${m})`);
+  return ms as DaysMode[];
 }
 
 // ---------------------------------------------------------------------------
@@ -302,16 +367,25 @@ async function plan(store: Store) {
 // ---------------------------------------------------------------------------
 
 async function pull(store: Store) {
+  for (const mode of daysModes()) {
+    if (stopping) break;
+    await pullPass(store, mode);
+  }
+}
+
+async function pullPass(store: Store, mode: DaysMode) {
   const { from, to } = window();
   const conc = Number(opt("concurrency", "4"));
   const maxDte = opt("max-dte");
   const wantOi = !flag("no-oi");
-  const wantStock = !flag("no-stock");
+  // Stock bars come from Alpaca (`bars`); Theta's stock endpoint is opt-in.
+  const wantStock = flag("theta-stock");
+  const calendar = await tradingCalendar(store, from, to);
   // A refusal this close to today means the endpoint isn't in the plan at all; older means a history limit.
   const recent = addDays(today(), -45);
   const G = { greeks: gate("greeks (IV, delta, stock price)"), eod: gate("option quotes"), oi: gate("open interest"), stock: gate("stock prices") };
   const u = await targets(store, from, to);
-  console.log(`Pulling ${fmtN(u.length)} symbols, ${from} .. ${to}, ${conc} requests at a time. Ctrl-C stops cleanly; rerun to resume.`);
+  console.log(`Pulling ${fmtN(u.length)} symbols, ${from} .. ${to}, days: ${mode}, ${conc} requests at a time. Ctrl-C stops cleanly; rerun to resume.`);
   const t0 = Date.now();
   let errors = 0;
   const finished: { symbol: string; from: string; to: string; requests: number; rows: number; minutes: number }[] = [];
@@ -359,14 +433,20 @@ async function pull(store: Store) {
     const greeksRows = new Set(
       (await store.all<{ d: string }>(`SELECT strftime(day, '%Y-%m-%d') AS d FROM fetch_log WHERE endpoint = 'option_greeks' AND symbol = ${q(sym)} AND rows > 0`)).map((r) => r.d),
     );
+    const symDays = calendar.filter((d) => d >= start && d <= end);
+    const sched = schedule(symDays, mode);
+    const quoteDays = new Set(sched.quotes);
+    const oiDays = new Set(sched.oi);
     const dayTask = async (day: string) => {
       try {
-        let quoted = greeksRows.has(day);
-        if (!quoted && !doneG.has(day) && allowed(G.greeks, day)) {
-          quoted = (await fetchDay("option_greeks", "option/history/greeks/eod", "option_greeks_eod", G.greeks, day)) > 0;
+        if (quoteDays.has(day)) {
+          let quoted = greeksRows.has(day);
+          if (!quoted && !doneG.has(day) && allowed(G.greeks, day)) {
+            quoted = (await fetchDay("option_greeks", "option/history/greeks/eod", "option_greeks_eod", G.greeks, day)) > 0;
+          }
+          if (!quoted && !doneE.has(day) && allowed(G.eod, day)) await fetchDay("option_eod", "option/history/eod", "option_eod", G.eod, day);
         }
-        if (!quoted && !doneE.has(day) && allowed(G.eod, day)) await fetchDay("option_eod", "option/history/eod", "option_eod", G.eod, day);
-        if (wantOi && !doneO.has(day) && allowed(G.oi, day)) await fetchDay("option_oi", "option/history/open_interest", "option_oi", G.oi, day);
+        if (wantOi && oiDays.has(day) && !doneO.has(day) && allowed(G.oi, day)) await fetchDay("option_oi", "option/history/open_interest", "option_oi", G.oi, day);
       } catch (e) {
         errors++;
         console.error(`  error ${sym} ${day}: ${e instanceof Error ? e.message : e}`);
@@ -399,7 +479,7 @@ async function pull(store: Store) {
 
     // Stock months first (cheap), then option days newest-first.
     if (wantStock) await pool(monthsDesc(start, end), conc, monthTask);
-    await pool(weekdaysDesc(start, end), conc, dayTask);
+    await pool(symDays.filter((d) => quoteDays.has(d) || oiDays.has(d)), conc, dayTask);
 
     await store.exportSymbol(sym);
     const el = Date.now() - t0;
@@ -407,7 +487,7 @@ async function pull(store: Store) {
     if (!stopping) finished.push({ symbol: sym, from: start, to: end, requests: stat.req, rows: stat.rows, minutes: Math.round((Date.now() - ts) / 60_000) });
     writeFileSync(
       PROGRESS_FILE,
-      JSON.stringify({ updated: new Date().toISOString(), window: { from, to }, total: u.length, done: i + 1, next: u[i + 1]?.symbol ?? null, elapsed: fmtDur(el), eta: fmtDur(eta), errors, finished }, null, 1),
+      JSON.stringify({ updated: new Date().toISOString(), pass: mode, window: { from, to }, total: u.length, done: i + 1, next: u[i + 1]?.symbol ?? null, elapsed: fmtDur(el), eta: fmtDur(eta), errors, finished }, null, 1),
     );
     console.log(
       `[${i + 1}/${u.length}] ${sym.padEnd(6)} ${start}..${end}  ${fmtN(stat.req)} req  ${fmtN(stat.rows)} rows` +
@@ -567,7 +647,7 @@ async function main() {
     // A pull holds the database; show its progress file instead.
     if (cmd === "status" && existsSync(PROGRESS_FILE)) {
       const p = JSON.parse(readFileSync(PROGRESS_FILE, "utf8"));
-      console.log(`A pull is running (database locked). Progress as of ${p.updated}: ${p.done}/${p.total} symbols, elapsed ${p.elapsed}, ETA ${p.eta}, ${p.errors} errors, next ${p.next}.`);
+      console.log(`A pull is running (database locked). Progress as of ${p.updated}, ${p.pass ?? "all"} pass: ${p.done}/${p.total} symbols, elapsed ${p.elapsed}, ETA ${p.eta}, ${p.errors} errors, next ${p.next}.`);
       console.table(p.finished.slice(-15));
       console.log(`Finished symbols are readable as Parquet under ${PARQUET_DIR}`);
       return;
