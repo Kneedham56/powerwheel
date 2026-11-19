@@ -4,13 +4,16 @@
  * Every write is idempotent: rows for the same key are replaced, and fetch_log is updated in
  * the same transaction, so a crash at any point resumes cleanly.
  */
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 import { csvHeader } from "./theta";
 
 export const DB_PATH = resolve(process.env.SKYNET_DB ?? join(process.cwd(), "data", "skynet.duckdb"));
+/** Per-symbol Parquet copies, readable while a pull holds the DuckDB file. */
+export const PARQUET_DIR = join(dirname(DB_PATH), "parquet");
+export const PROGRESS_FILE = join(dirname(DB_PATH), "progress.json");
 
 const D = "DOUBLE";
 const I = "INTEGER";
@@ -42,6 +45,16 @@ export const TABLES: Record<string, Record<string, string>> = {
   // free reference series (Cboe VIX family, FRED T-bill)
   ext_daily: { source: V, symbol: V, date: "DATE", open: D, high: D, low: D, close: D },
 };
+
+/**
+ * Higher-order greeks the vendor sends that we don't store: each is closed-form math on
+ * (stock price, strike, time, rate, IV), all of which are kept, so they can be rebuilt exactly.
+ * They were over half the bytes per row.
+ */
+export const DROP_COLUMNS = new Set(["epsilon", "lambda", "vanna", "charm", "vomma", "veta", "vera", "speed", "zomma", "color", "ultima", "d1", "d2", "dual_delta", "dual_gamma"]);
+
+/** Tables whose rows move to Parquet once a symbol is done (DuckDB keeps only work in progress). */
+export const SYMBOL_TABLES = ["option_greeks_eod", "option_eod", "option_oi", "stock_eod"];
 
 export const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const ident = (s: string) => `"${s.replace(/"/g, '""')}"`;
@@ -99,6 +112,51 @@ export class Store {
     return c;
   }
 
+  /**
+   * Move one symbol's rows into data/parquet/<table>/<SYMBOL>.parquet, the permanent store.
+   * Merges with the existing file (rows in DuckDB win for their dates), writes to a temp name and
+   * renames so a reader never sees a half-written file, and only then clears the rows from DuckDB.
+   * If the rename fails (file open elsewhere), the rows stay in DuckDB and the next export retries.
+   * DuckDB is locked while a pull runs; backtests read these files instead.
+   */
+  exportSymbol(symbol: string, tables = SYMBOL_TABLES) {
+    return this.exclusive(async () => {
+      for (const t of tables) {
+        const n = (await this.all<{ n: number }>(`SELECT count(*) AS n FROM ${t} WHERE symbol = ${q(symbol)}`))[0].n;
+        if (!n) continue;
+        const dir = join(PARQUET_DIR, t);
+        mkdirSync(dir, { recursive: true });
+        const final = join(dir, `${symbol}.parquet`);
+        const tmp = `${final}.tmp`;
+        const order = "expiration" in TABLES[t] ? `date, expiration, strike, "right"` : "date";
+        const fresh = `SELECT * FROM ${t} WHERE symbol = ${q(symbol)}`;
+        const src = existsSync(final)
+          ? `SELECT * FROM read_parquet(${q(final.replace(/\\/g, "/"))}, union_by_name = true)
+               WHERE date NOT IN (SELECT DISTINCT date FROM ${t} WHERE symbol = ${q(symbol)})
+             UNION ALL BY NAME ${fresh}`
+          : fresh;
+        await this.con.run(`COPY (SELECT * FROM (${src}) ORDER BY ${order}) TO ${q(tmp.replace(/\\/g, "/"))} (FORMAT parquet, COMPRESSION zstd)`);
+        try {
+          renameSync(tmp, final);
+        } catch (e) {
+          console.warn(`  could not replace ${final} (open elsewhere?), keeping rows in DuckDB: ${e instanceof Error ? e.message : e}`);
+          continue;
+        }
+        await this.con.run(`DELETE FROM ${t} WHERE symbol = ${q(symbol)}`);
+      }
+    });
+  }
+
+  /** Whole-table export for small reference tables. */
+  exportTable(table: string) {
+    return this.exclusive(async () => {
+      mkdirSync(PARQUET_DIR, { recursive: true });
+      const final = join(PARQUET_DIR, `${table}.parquet`);
+      await this.con.run(`COPY ${table} TO ${q(`${final}.tmp`.replace(/\\/g, "/"))} (FORMAT parquet, COMPRESSION zstd)`);
+      renameSync(`${final}.tmp`, final);
+    });
+  }
+
   /** Keys (days) already fetched for an endpoint + symbol, as YYYY-MM-DD. */
   async done(endpoint: string, symbol: string): Promise<Set<string>> {
     const rows = await this.all<{ d: string }>(
@@ -132,6 +190,7 @@ export class Store {
         if (hasRows) {
           const have = await this.columns(table);
           for (const h of header) {
+            if (DROP_COLUMNS.has(h)) continue;
             if (!have.has(h) && !(h in extras)) {
               await this.con.run(`ALTER TABLE ${table} ADD COLUMN ${ident(h)} VARCHAR`);
               have.add(h);
@@ -143,7 +202,7 @@ export class Store {
           const target: string[] = [];
           const exprs: string[] = [];
           for (const h of header) {
-            if (h in extras) continue;
+            if (h in extras || DROP_COLUMNS.has(h)) continue;
             target.push(ident(h));
             const ty = schema[h];
             exprs.push(ty && ty !== V ? `TRY_CAST(${ident(h)} AS ${ty})` : ident(h));
