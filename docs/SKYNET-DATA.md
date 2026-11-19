@@ -95,7 +95,10 @@ ThetaData's free stock tier only reaches back to 2023-06, so daily bars come fro
   - an overnight jump beyond 3× or under ⅓ in the split-adjusted series (META: a Roundhill ETF handed the ticker to Meta on 2022-06-09)
 
   Real splits and squeezes (NVDA, TSLA, AAPL, GME) don't trigger it.
-- **Missing symbols:** ones Alpaca has no bars for are listed in `stock_bars/_missing.json`. Their daily close is still in the greeks rows (`underlying_price`) from 2017 on.
+- **Missing symbols:** ones Alpaca has no bars for are listed in `stock_bars/_missing.json`. As of 2026-11-19 that's 40, all index or other non-equity roots (MSCI indexes, micro index options).
+  - The options pull skips these, since they can't be wheeled; priority names always stay.
+  - Share-class roots map to Alpaca's dotted tickers (BRKB is `BRK.B`, RDSA is `RDS.A`).
+  - For any equity that still lacks bars, the daily close is in the greeks rows (`underlying_price`) from 2017 on.
 
 ## Known gaps
 
