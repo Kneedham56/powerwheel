@@ -202,6 +202,8 @@ async function lookup(store: Store, list: string[], from: string, to: string): P
   return list.map((s) => known.find((k) => k.symbol === s) ?? { symbol: s, weekly_months: 0, exps: 0, first_exp: from, last_exp: to });
 }
 
+const MISSING_BARS = join(PARQUET_DIR, "stock_bars", "_missing.json");
+
 /** data/priority.txt (written by `priority`, gitignored): symbols pulled before the rest of the universe. */
 const PRIORITY_FILE = join(dirname(DB_PATH), "priority.txt");
 const readPriority = () =>
@@ -217,7 +219,12 @@ async function targets(store: Store, from: string, to: string): Promise<USym[]> 
   // Priority names first (only those that ever had listed options), then the weekly universe.
   const pri = flag("no-priority") ? [] : (await lookup(store, [...new Set(readPriority())], from, to)).filter((s) => s.exps > 0);
   const seen = new Set(pri.map((s) => s.symbol));
-  const rest = flag("priority-only") ? [] : (await weeklyUniverse(store, from, to, Number(opt("min-weekly-months", "3")))).filter((s) => !seen.has(s.symbol));
+  // Roots with no stock bars at Alpaca are index or other non-equity products (MSCI indexes,
+  // micro index options): they can't be wheeled, so skip them (priority names always stay).
+  const noBars = new Set<string>(existsSync(MISSING_BARS) ? JSON.parse(readFileSync(MISSING_BARS, "utf8")).symbols : []);
+  const rest = flag("priority-only")
+    ? []
+    : (await weeklyUniverse(store, from, to, Number(opt("min-weekly-months", "3")))).filter((s) => !seen.has(s.symbol) && !noBars.has(s.symbol));
   const u = [...pri, ...rest];
   const limit = opt("limit");
   return limit ? u.slice(0, Number(limit)) : u;

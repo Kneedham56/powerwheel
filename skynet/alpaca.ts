@@ -13,6 +13,9 @@ import { PARQUET_DIR, Store, q } from "./store";
 const BASE = "https://data.alpaca.markets/v2/stocks/bars";
 export const BARS_DIR = join(PARQUET_DIR, "stock_bars");
 const BATCH = 50;
+/** Option roots that Alpaca spells with a share-class dot. Files keep the option root's name. */
+const ALIAS: Record<string, string> = { BRKB: "BRK.B", BFB: "BF.B", RDSA: "RDS.A", RDSB: "RDS.B", LENB: "LEN.B", HEIA: "HEI.A" };
+const fromAlpaca = Object.fromEntries(Object.entries(ALIAS).map(([k, v]) => [v, k]));
 const MIN_GAP_MS = 320; // stays under 200 requests a minute
 
 interface AlpacaBar {
@@ -71,11 +74,12 @@ export async function pullBars(store: Store, symbols: string[], from: string, to
         // asof "-": the literal ticker on each date, matching how option data is keyed. (The default
         // maps today's company back through renames, which stitches a reused ticker's old company
         // onto its new one.)
-        const qs = new URLSearchParams({ symbols: batch.join(","), timeframe: "1Day", start: from, end: to, adjustment: adj, feed: "sip", limit: "10000", asof: "-" });
+        const qs = new URLSearchParams({ symbols: batch.map((s) => ALIAS[s] ?? s).join(","), timeframe: "1Day", start: from, end: to, adjustment: adj, feed: "sip", limit: "10000", asof: "-" });
         if (token) qs.set("page_token", token);
         const j = await get(`${BASE}?${qs}`);
         req++;
-        for (const [sym, bars] of Object.entries(j.bars ?? {})) {
+        for (const [alpacaSym, bars] of Object.entries(j.bars ?? {})) {
+          const sym = fromAlpaca[alpacaSym] ?? alpacaSym;
           const out = rows.get(sym);
           if (!out) continue;
           for (const x of bars) {
