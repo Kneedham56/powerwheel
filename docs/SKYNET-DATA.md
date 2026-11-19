@@ -31,6 +31,8 @@ If `greeks/eod` is available, it replaces the plain quote endpoint, since it ret
 
 ## Commands
 
+In Windows PowerShell, type `npm.cmd` instead of `npm`, since the default script policy blocks `npm.ps1`.
+
 ```
 npm run skynet -- universe            # symbol list + expiration history for every symbol (about 40 min on free, done once)
 npm run skynet -- priority            # write data/priority.txt from the app DB: index ETFs, traded tickers, prep-report names
@@ -79,6 +81,9 @@ Ctrl-C stops after the requests in flight finish. Each day's rows and its log en
 7. Cancel the subscription. The free tier keeps working for new days from June 2023 on, without open interest or vendor IV.
 
 ## Known gaps
+
+- **Greeks history on Options Standard starts in early 2017.** It's a rolling 10-year window: 2016-12 returns no data and 2017-03 works. For 2016 the pull stores plain quotes and open interest, and IV and delta can be computed from those.
+- The Theta Terminal listens on `0.0.0.0:25503` by default (config.toml, `host`), so other devices on the home network can reach it unless Windows Firewall blocks Java. Set `host = "127.0.0.1"` and restart the terminal to keep it local only.
 
 - **Stock bars before 2023-06 need a stock subscription.** Options Standard covers options only. The greeks rows carry the daily stock close, `underlying_price`, which is enough for pricing. Indicators that need high/low/volume (ATR, volume trends) need stock bars, so decide on day 1 whether to add a stock plan for the same month.
 - Index levels (SPX, NDX) aren't pulled. Use SPY and QQQ, or the Cboe series.
