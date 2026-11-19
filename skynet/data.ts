@@ -12,9 +12,9 @@
  * Pulls are resumable: run the same command again and it skips what is already stored.
  * Days are fetched newest-first, so a tier's history limit is found on the first refused day.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DB_PATH, Store, q } from "./store";
+import { DB_PATH, PARQUET_DIR, PROGRESS_FILE, Store, q } from "./store";
 import { thetaGet } from "./theta";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +71,23 @@ process.on("SIGINT", () => {
   stopping = true;
   console.log("\nStopping after the requests in flight finish (Ctrl-C again to force; nothing is lost either way).");
 });
+
+const MIN_FREE = 30e9;
+function freeBytes(): number | null {
+  try {
+    const s = statfsSync(dirname(DB_PATH));
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
+
+function dirBytes(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  let n = 0;
+  for (const e of readdirSync(dir, { withFileTypes: true })) n += e.isDirectory() ? dirBytes(join(dir, e.name)) : statSync(join(dir, e.name)).size;
+  return n;
+}
 
 async function pool<T>(items: T[], n: number, fn: (x: T) => Promise<void>) {
   let i = 0;
@@ -137,6 +154,7 @@ async function universe(store: Store) {
     });
     if (++n % 500 === 0) console.log(`  ${fmtN(n)} / ${fmtN(syms.length)}  (${fmtDur(Date.now() - t0)})`);
   });
+  await store.exportTable("option_expirations");
   console.log(`Done: ${fmtN(n)} symbols in ${fmtDur(Date.now() - t0)}.`);
 }
 
@@ -288,8 +306,14 @@ async function pull(store: Store) {
   console.log(`Pulling ${fmtN(u.length)} symbols, ${from} .. ${to}, ${conc} requests at a time. Ctrl-C stops cleanly; rerun to resume.`);
   const t0 = Date.now();
   let errors = 0;
+  const finished: { symbol: string; from: string; to: string; requests: number; rows: number; minutes: number }[] = [];
 
   for (let i = 0; i < u.length && !stopping; i++) {
+    const free = freeBytes();
+    if (free !== null && free < MIN_FREE) {
+      console.error(`Only ${(free / 1e9).toFixed(0)} GB free on the data drive; stopping before ${u[i].symbol}. Free up space, then rerun.`);
+      break;
+    }
     const s = u[i];
     const sym = s.symbol;
     const { start, end } = symRange(s, from, to);
@@ -308,7 +332,7 @@ async function pull(store: Store) {
       stat.ms += r.ms;
       if (r.kind === "forbidden") {
         refused(g, day, recent, r.message);
-        return false;
+        return 0;
       }
       const n = await store.load({
         table,
@@ -319,13 +343,20 @@ async function pull(store: Store) {
       });
       stat.rows += n;
       if (!n) stat.empty++;
-      return true;
+      return n;
     };
 
+    // Greeks rows carry the full quote, so plain quotes are only fetched when greeks gave nothing
+    // (not in the plan, or before the vendor's greeks history starts: early 2017 on Standard).
+    const greeksRows = new Set(
+      (await store.all<{ d: string }>(`SELECT strftime(day, '%Y-%m-%d') AS d FROM fetch_log WHERE endpoint = 'option_greeks' AND symbol = ${q(sym)} AND rows > 0`)).map((r) => r.d),
+    );
     const dayTask = async (day: string) => {
       try {
-        let quoted = doneG.has(day);
-        if (!quoted && allowed(G.greeks, day)) quoted = await fetchDay("option_greeks", "option/history/greeks/eod", "option_greeks_eod", G.greeks, day);
+        let quoted = greeksRows.has(day);
+        if (!quoted && !doneG.has(day) && allowed(G.greeks, day)) {
+          quoted = (await fetchDay("option_greeks", "option/history/greeks/eod", "option_greeks_eod", G.greeks, day)) > 0;
+        }
         if (!quoted && !doneE.has(day) && allowed(G.eod, day)) await fetchDay("option_eod", "option/history/eod", "option_eod", G.eod, day);
         if (wantOi && !doneO.has(day) && allowed(G.oi, day)) await fetchDay("option_oi", "option/history/open_interest", "option_oi", G.oi, day);
       } catch (e) {
@@ -362,8 +393,14 @@ async function pull(store: Store) {
     if (wantStock) await pool(monthsDesc(start, end), conc, monthTask);
     await pool(weekdaysDesc(start, end), conc, dayTask);
 
+    await store.exportSymbol(sym);
     const el = Date.now() - t0;
     const eta = (el / (i + 1)) * (u.length - i - 1);
+    if (!stopping) finished.push({ symbol: sym, from: start, to: end, requests: stat.req, rows: stat.rows, minutes: Math.round((Date.now() - ts) / 60_000) });
+    writeFileSync(
+      PROGRESS_FILE,
+      JSON.stringify({ updated: new Date().toISOString(), window: { from, to }, total: u.length, done: i + 1, next: u[i + 1]?.symbol ?? null, elapsed: fmtDur(el), eta: fmtDur(eta), errors, finished }, null, 1),
+    );
     console.log(
       `[${i + 1}/${u.length}] ${sym.padEnd(6)} ${start}..${end}  ${fmtN(stat.req)} req  ${fmtN(stat.rows)} rows` +
         `  ${stat.req ? Math.round(stat.ms / stat.req) : 0}ms avg  ${fmtDur(Date.now() - ts)}  | total ${fmtDur(el)}, ETA ${fmtDur(eta)}`,
@@ -440,6 +477,20 @@ async function ref(store: Store) {
     }
     console.log(`  Theta ${sym}: ${fmtN(n)} days`);
   }
+  for (const t of REF_TABLES) await store.exportTable(t);
+}
+
+// ---------------------------------------------------------------------------
+// export: (re)write every Parquet copy; pull does this per symbol as it goes
+// ---------------------------------------------------------------------------
+
+const REF_TABLES = ["ext_daily", "rate_eod", "option_expirations"];
+
+async function exportAll(store: Store) {
+  for (const t of REF_TABLES) await store.exportTable(t);
+  const syms = (await store.all<{ symbol: string }>(`SELECT DISTINCT symbol FROM fetch_log WHERE endpoint LIKE 'option_%' AND status = 'ok' ORDER BY 1`)).map((r) => r.symbol);
+  for (const s of syms) await store.exportSymbol(s);
+  console.log(`Exported ${REF_TABLES.length} reference tables and ${fmtN(syms.length)} symbols to ${PARQUET_DIR}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -451,7 +502,9 @@ async function status(store: Store) {
   try {
     size = statSync(DB_PATH).size;
   } catch {}
-  console.log(`Database: ${DB_PATH} (${(size / 1e9).toFixed(2)} GB)`);
+  const free = freeBytes();
+  console.log(`Database: ${DB_PATH} (${(size / 1e9).toFixed(2)} GB; download log + work in progress)`);
+  console.log(`Parquet store: ${PARQUET_DIR} (${(dirBytes(PARQUET_DIR) / 1e9).toFixed(2)} GB)${free === null ? "" : `, ${(free / 1e9).toFixed(0)} GB free`}`);
   const log = await store.all(`
     SELECT endpoint, count(DISTINCT symbol) AS symbols, count(*) FILTER (WHERE status = 'ok') AS ok,
            count(*) FILTER (WHERE status = 'no_data') AS no_data, sum(rows) AS rows, round(avg(ms)) AS avg_ms,
@@ -462,6 +515,7 @@ async function status(store: Store) {
   for (const t of ["option_greeks_eod", "option_eod", "option_oi", "stock_eod", "rate_eod", "ext_daily", "option_expirations"]) {
     counts[t] = (await store.all<{ n: number }>(`SELECT count(*) AS n FROM ${t}`))[0].n;
   }
+  console.log("Rows still in DuckDB (moved to Parquet when each symbol finishes):");
   console.table(counts);
 }
 
@@ -469,13 +523,28 @@ async function status(store: Store) {
 
 async function main() {
   if (cmd === "priority") return priority();
-  const cmds: Record<string, (s: Store) => Promise<void>> = { universe, plan, pull, ref, status };
+  const cmds: Record<string, (s: Store) => Promise<void>> = { universe, plan, pull, ref, status, export: exportAll };
   const fn = cmd ? cmds[cmd] : undefined;
   if (!fn) {
-    console.log("usage: npm run skynet -- universe | priority | plan | pull | ref | status   (see docs/SKYNET-DATA.md)");
+    console.log("usage: npm run skynet -- universe | priority | plan | pull | ref | status | export   (see docs/SKYNET-DATA.md)");
     process.exit(1);
   }
-  const store = await Store.open();
+  let store: Store;
+  try {
+    store = await Store.open();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/used by another process|lock/i.test(msg)) throw e;
+    // A pull holds the database; show its progress file instead.
+    if (cmd === "status" && existsSync(PROGRESS_FILE)) {
+      const p = JSON.parse(readFileSync(PROGRESS_FILE, "utf8"));
+      console.log(`A pull is running (database locked). Progress as of ${p.updated}: ${p.done}/${p.total} symbols, elapsed ${p.elapsed}, ETA ${p.eta}, ${p.errors} errors, next ${p.next}.`);
+      console.table(p.finished.slice(-15));
+      console.log(`Finished symbols are readable as Parquet under ${PARQUET_DIR}`);
+      return;
+    }
+    throw new Error(`The database is locked, probably by a running pull. Stop it first, or read the Parquet files in ${PARQUET_DIR}.`);
+  }
   try {
     await fn(store);
   } finally {

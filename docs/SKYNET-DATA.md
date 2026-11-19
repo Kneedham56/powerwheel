@@ -31,13 +31,16 @@ If `greeks/eod` is available, it replaces the plain quote endpoint, since it ret
 
 ## Commands
 
+In Windows PowerShell, type `npm.cmd` instead of `npm`, since the default script policy blocks `npm.ps1`.
+
 ```
 npm run skynet -- universe            # symbol list + expiration history for every symbol (about 40 min on free, done once)
 npm run skynet -- priority            # write data/priority.txt from the app DB: index ETFs, traded tickers, prep-report names
 npm run skynet -- plan                # which symbols a pull covers, with a time estimate
 npm run skynet -- pull                # the download (resumable; rerun the same command after any stop)
 npm run skynet -- ref                 # Cboe VIX family, FRED T-bill, Theta rates
-npm run skynet -- status              # what's stored, per endpoint
+npm run skynet -- status              # what's stored, per endpoint (during a pull: its progress file)
+npm run skynet -- export              # rewrite the Parquet store from DuckDB (normally automatic)
 ```
 
 `pull` options:
@@ -80,15 +83,32 @@ Ctrl-C stops after the requests in flight finish. Each day's rows and its log en
 
 ## Known gaps
 
+- **Greeks history on Options Standard starts in early 2017.** It's a rolling 10-year window: 2016-12 returns no data and 2017-03 works. For 2016 the pull stores plain quotes and open interest, and IV and delta can be computed from those.
+- The Theta Terminal listens on `0.0.0.0:25503` by default (config.toml, `host`), so other devices on the home network can reach it unless Windows Firewall blocks Java. Set `host = "127.0.0.1"` and restart the terminal to keep it local only.
+
 - **Stock bars before 2023-06 need a stock subscription.** Options Standard covers options only. The greeks rows carry the daily stock close, `underlying_price`, which is enough for pricing. Indicators that need high/low/volume (ATR, volume trends) need stock bars, so decide on day 1 whether to add a stock plan for the same month.
 - Index levels (SPX, NDX) aren't pulled. Use SPY and QQQ, or the Cboe series.
 - Earnings dates and the macro calendar (Fed meetings, CPI) are not in here yet.
 
-## Tables
+## Where the data lives
 
-- `option_greeks_eod`, `option_eod`, `option_oi`: one row per contract per trading day (`date`), with the vendor's columns as delivered.
+**Parquet is the permanent store:** `data/parquet/<table>/<SYMBOL>.parquet`, plus `data/parquet/<table>.parquet` for the reference tables.
+- When a symbol finishes (or a pull stops), its rows are merged into its file and cleared from DuckDB.
+- `data/skynet.duckdb` keeps only the download log (`fetch_log`) and the symbol in progress.
+
+A running pull locks the DuckDB file, but Parquet files can be read at any time, so backtests read those. For example, in DuckDB:
+`SELECT * FROM read_parquet('data/parquet/option_greeks_eod/*.parquet', union_by_name = true)`
+
+`status` during a pull shows `data/progress.json` (symbols finished, ETA, errors). `export` rewrites the Parquet copies from DuckDB by hand; normally you never need it.
+
+Tables:
+- `option_greeks_eod`, `option_eod`, `option_oi`: one row per contract per trading day (`date`), with the vendor's columns.
+  - The higher-order greeks (vanna, charm, vomma, veta, vera, speed, zomma, color, ultima, epsilon, lambda, d1, d2, dual_*) aren't stored. They are closed-form math on the stock price, strike, time, rate and IV, all of which are kept, and they were over half the bytes.
+  - SPY's first 232 greeks days still have them.
 - `stock_eod`, `rate_eod`, `ext_daily` (with `source` = `cboe` or `fred`): daily series.
 - `option_symbols`, `option_expirations`: the universe source.
 - `fetch_log`: what has been fetched (`ok` or `no_data`, rows, ms). This is what makes reruns resume.
+
+Size: SPY, the largest chain, is about 13,000 contracts a day at roughly 40–75 bytes per row. The pull stops on its own if the data drive falls below 30 GB free.
 
 If the vendor adds a column, it's stored as VARCHAR rather than dropped, and the run prints a note.
