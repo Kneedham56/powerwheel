@@ -14,6 +14,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pullBars } from "./alpaca";
 import { DB_PATH, PARQUET_DIR, PROGRESS_FILE, Store, q } from "./store";
 import { thetaGet } from "./theta";
 
@@ -481,6 +482,26 @@ async function ref(store: Store) {
 }
 
 // ---------------------------------------------------------------------------
+// bars: daily stock bars from Alpaca (free, 2016+), straight to Parquet. Uses an in-memory
+// database (the universe comes from the exported expirations file), so it runs during a pull.
+// ---------------------------------------------------------------------------
+
+async function bars() {
+  await import("../scripts/env");
+  const exp = join(PARQUET_DIR, "option_expirations.parquet");
+  if (!existsSync(exp)) throw new Error("Run `npm run skynet -- universe` (or `export`) first: bars reads the universe from Parquet.");
+  const mem = await Store.open(":memory:");
+  try {
+    await mem.con.run(`INSERT INTO option_expirations SELECT symbol, expiration FROM read_parquet(${q(exp.replace(/\\/g, "/"))})`);
+    const { from, to } = window();
+    const u = await targets(mem, from, to);
+    await pullBars(mem, u.map((s) => s.symbol), from, to, flag("refresh"), () => stopping);
+  } finally {
+    mem.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // export: (re)write every Parquet copy; pull does this per symbol as it goes
 // ---------------------------------------------------------------------------
 
@@ -523,6 +544,7 @@ async function status(store: Store) {
 
 async function main() {
   if (cmd === "priority") return priority();
+  if (cmd === "bars") return bars();
   const cmds: Record<string, (s: Store) => Promise<void>> = { universe, plan, pull, ref, status, export: exportAll };
   const fn = cmd ? cmds[cmd] : undefined;
   if (!fn) {

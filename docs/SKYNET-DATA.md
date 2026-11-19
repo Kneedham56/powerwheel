@@ -11,6 +11,7 @@ Everything lands in a local DuckDB file, `data/skynet.duckdb` (override with `SK
 | Option chains: every strike and expiry, puts and calls, expired contracts included | ThetaData, through the local Theta Terminal | Free tier from 2023-06-01; Options Standard ($80/mo) from 2016 |
 | IV, greeks, the stock price on each option row | ThetaData `greeks/eod` | Options Standard |
 | Open interest | ThetaData | Options Value and up |
+| Stock daily bars (OHLCV) | **Alpaca** free market-data plan (`bars` command) | Free from 2016, 200 requests/min |
 | Stock daily bars | ThetaData `stock/history/eod` | Free from 2023-06; earlier needs a stock subscription |
 | Symbol list and expiration history from 2012, delisted names included | ThetaData | Free |
 | VIX, VIX9D, VIX3M, VVIX daily history | Cboe's public CSVs | Free |
@@ -39,6 +40,7 @@ npm run skynet -- priority            # write data/priority.txt from the app DB:
 npm run skynet -- plan                # which symbols a pull covers, with a time estimate
 npm run skynet -- pull                # the download (resumable; rerun the same command after any stop)
 npm run skynet -- ref                 # Cboe VIX family, FRED T-bill, Theta rates
+npm run skynet -- bars [--refresh]    # Alpaca daily stock bars, 2016 on (minutes; can run during a pull)
 npm run skynet -- status              # what's stored, per endpoint (during a pull: its progress file)
 npm run skynet -- export              # rewrite the Parquet store from DuckDB (normally automatic)
 ```
@@ -81,12 +83,25 @@ Ctrl-C stops after the requests in flight finish. Each day's rows and its log en
 6. Before cancelling: confirm in `status` that coverage reaches 2016 for the core names, then copy `data/skynet.duckdb` somewhere safe as a backup.
 7. Cancel the subscription. The free tier keeps working for new days from June 2023 on, without open interest or vendor IV.
 
+## Stock bars (Alpaca)
+
+ThetaData's free stock tier only reaches back to 2023-06, so daily bars come from Alpaca's free market-data plan instead.
+- **Setup:** a free paper/data-only account, with keys in `.env.local` as `ALPACA_KEY_ID` and `ALPACA_SECRET_KEY`.
+- **Output:** `bars` writes `data/parquet/stock_bars/<SYMBOL>.parquet` directly, never the DuckDB file, so it runs alongside an options pull. It gets its symbol list from the exported `option_expirations.parquet` and the priority file. The full set takes about 6 minutes.
+- **Adjustment:** each file holds both `raw` prices (the ones option strikes use) and `split`-adjusted prices (for indicators), in the `adjustment` column.
+- **Literal tickers:** Alpaca is queried with `asof=-`, so each date gets whatever traded under that literal ticker, the same way option data is keyed. Alpaca's default rename mapping would stitch a reused ticker's old company onto its new one.
+- **`segment`:** a counter that goes up at a likely company change. Indicators must never reach across segments. It triggers on:
+  - a gap over 45 days (BBBY: Bed Bath ends 2023-05, Beyond starts 2025-08)
+  - an overnight jump beyond 3× or under ⅓ in the split-adjusted series (META: a Roundhill ETF handed the ticker to Meta on 2022-06-09)
+
+  Real splits and squeezes (NVDA, TSLA, AAPL, GME) don't trigger it.
+- **Missing symbols:** ones Alpaca has no bars for are listed in `stock_bars/_missing.json`. Their daily close is still in the greeks rows (`underlying_price`) from 2017 on.
+
 ## Known gaps
 
 - **Greeks history on Options Standard starts in early 2017.** It's a rolling 10-year window: 2016-12 returns no data and 2017-03 works. For 2016 the pull stores plain quotes and open interest, and IV and delta can be computed from those.
 - The Theta Terminal listens on `0.0.0.0:25503` by default (config.toml, `host`), so other devices on the home network can reach it unless Windows Firewall blocks Java. Set `host = "127.0.0.1"` and restart the terminal to keep it local only.
 
-- **Stock bars before 2023-06 need a stock subscription.** Options Standard covers options only. The greeks rows carry the daily stock close, `underlying_price`, which is enough for pricing. Indicators that need high/low/volume (ATR, volume trends) need stock bars, so decide on day 1 whether to add a stock plan for the same month.
 - Index levels (SPX, NDX) aren't pulled. Use SPY and QQQ, or the Cboe series.
 - Earnings dates and the macro calendar (Fed meetings, CPI) are not in here yet.
 
