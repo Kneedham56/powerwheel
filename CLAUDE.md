@@ -35,6 +35,12 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - `src/lib/race.ts` (pure engine: Monday entry, Wednesday take-profit and redeploy, Friday settlement, the review that grades both sides' trades) + `scripts/race.ts` (`npm run race -- …`, I/O and DB) + `docs/RACE.md` (the runbook the Monday, Wednesday and Friday routines follow). It trades the week's Sunday report from `prep_reports`, so rule changes reach it on the next run.
 - Tables: `races`, `race_state` (engine state, version-pinned), `race_weeks`, `race_trades`, `race_reviews`, `race_lessons` (proposed rule changes; nothing changes a rule until Kyle adopts it). `/race` is private; Kyle's side shows returns and per-trade results, never his account value.
 
+## Skynet (backtest research)
+- A research bot that replays rulesets over historical data. It's kept **separate from production**: it never changes `rules.ts`, prep or the race; Kyle adopts a Skynet ruleset explicitly.
+- Skynet rulesets are named after random League of Legends champions, never reused. Sweep variants hang under a parent, like "Ahri · delta 0.22".
+- `skynet/` holds the code. Data: `skynet/data.ts` (`npm run skynet -- …`) pulls ThetaData (through the local Theta Terminal) plus Cboe and FRED into `data/skynet.duckdb`, which is gitignored and licensed personal-use only: never commit or share it. Runbook: `docs/SKYNET-DATA.md`.
+- Decisions inside a backtest run are pure code. An AI can't unlearn market history, so it only works between runs.
+
 ## Auth & demo
 - `src/lib/auth.ts` + `src/proxy.ts`: single-password gate (`APP_PASSWORD`, `AUTH_SECRET`); login/logout are route handlers under `src/app/auth/`. Server actions re-check via `requireWrite()` in `app/actions.ts`.
 - `DEMO_MODE=true`: no login, read-only, banner. The demo uses a separate Supabase project filled by `scripts/demo-seed.ts` (made-up data; run with `ENV_FILE=.env.demo`, and it refuses to target the project in .env.local).

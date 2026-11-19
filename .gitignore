@@ -20,3 +20,6 @@ sync/processed/
 Thumbs.db
 npm-debug.log*
 .vercel
+
+# skynet market data (licensed, never commit)
+/data/
