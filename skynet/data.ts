@@ -308,7 +308,7 @@ async function pull(store: Store) {
       stat.ms += r.ms;
       if (r.kind === "forbidden") {
         refused(g, day, recent, r.message);
-        return false;
+        return 0;
       }
       const n = await store.load({
         table,
@@ -319,13 +319,20 @@ async function pull(store: Store) {
       });
       stat.rows += n;
       if (!n) stat.empty++;
-      return true;
+      return n;
     };
 
+    // Greeks rows carry the full quote, so plain quotes are only fetched when greeks gave nothing
+    // (not in the plan, or before the vendor's greeks history starts: early 2017 on Standard).
+    const greeksRows = new Set(
+      (await store.all<{ d: string }>(`SELECT strftime(day, '%Y-%m-%d') AS d FROM fetch_log WHERE endpoint = 'option_greeks' AND symbol = ${q(sym)} AND rows > 0`)).map((r) => r.d),
+    );
     const dayTask = async (day: string) => {
       try {
-        let quoted = doneG.has(day);
-        if (!quoted && allowed(G.greeks, day)) quoted = await fetchDay("option_greeks", "option/history/greeks/eod", "option_greeks_eod", G.greeks, day);
+        let quoted = greeksRows.has(day);
+        if (!quoted && !doneG.has(day) && allowed(G.greeks, day)) {
+          quoted = (await fetchDay("option_greeks", "option/history/greeks/eod", "option_greeks_eod", G.greeks, day)) > 0;
+        }
         if (!quoted && !doneE.has(day) && allowed(G.eod, day)) await fetchDay("option_eod", "option/history/eod", "option_eod", G.eod, day);
         if (wantOi && !doneO.has(day) && allowed(G.oi, day)) await fetchDay("option_oi", "option/history/open_interest", "option_oi", G.oi, day);
       } catch (e) {
