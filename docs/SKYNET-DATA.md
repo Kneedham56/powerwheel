@@ -45,6 +45,18 @@ npm run skynet -- status              # what's stored, per endpoint (during a pu
 npm run skynet -- export              # rewrite the Parquet store from DuckDB (normally automatic)
 ```
 
+**Two passes, so the useful data arrives first.** Each request costs about the same whether it returns the whole chain or a filtered slice; the vendor builds the full chain either way. So the lever is how many requests, not their size.
+- **`--days core`:** greeks on the days the wheel engine trades. That's each week's first trading day (entry), its Wednesday (take-profit and redeploy; the nearest trading day if Wednesday is a holiday) and its last trading day (expiry and rolls), with open interest on entry days only. It's about 40% of the requests.
+- **`--days rest`:** the other days, plus the rest of the open interest.
+- **`--days core,rest`:** both passes in order in one process (one Ctrl-C stops both). This is what the paid month runs.
+- **`--days all`** (the default): every day in one pass.
+
+The passes never overlap, and the trading calendar comes from SPY's Alpaca bars, so holidays aren't requested.
+
+As of 2026-11-19, at the measured ~1.46 s per request (SPY; smaller names are faster):
+- core pass: priority list about 26 hours, everything about 10 days
+- rest pass: about 14 more days
+
 `pull` options:
 - `--from` / `--to`: the window. Default is 2016-01-01 through yesterday.
 - `--symbols TSLA,AAPL`: pull just these, instead of the universe.
@@ -52,7 +64,9 @@ npm run skynet -- export              # rewrite the Parquet store from DuckDB (n
 - `--concurrency N`: Standard allows 4 concurrent requests, Pro 8. The terminal queues anything above the limit, so going over is safe.
 - `--max-dte N`: only expiries within N days. This saves space but drops LEAPS; the default keeps everything.
 - `--min-weekly-months N`: how strict the weekly filter is (default 3).
-- `--no-oi` / `--no-stock`: skip open interest or stock bars.
+- `--days all|core|rest|core,rest`: see above.
+- `--no-oi`: skip open interest.
+- `--theta-stock`: also pull ThetaData stock EOD (off by default, since Alpaca bars cover it).
 
 **Priority:** `data/priority.txt` is pulled before the rest of the universe, top to bottom. `priority` builds it from:
 - SPY, QQQ and IWM
@@ -78,7 +92,7 @@ Ctrl-C stops after the requests in flight finish. Each day's rows and its log en
 1. Run the free steps first, so no paid time goes to setup: `universe`, `priority`, `ref`, and a small `pull` to confirm the terminal works.
 2. Subscribe to **Options Standard, billed monthly**. Restart the Theta Terminal and check that the log says `Options: STANDARD`.
 3. Smoke test: `npm run skynet -- pull --symbols SPY --from 2016-01-04 --to 2016-01-08`. Then `status`: `option_greeks` and `option_oi` should have rows, and `underlying_price` and `implied_vol` should be filled in.
-4. `npm run skynet -- plan` gives the estimate. Then start `npm run skynet -- pull` in a terminal tab and leave it. If it stops, because of a reboot, a terminal restart or too many errors, just rerun it.
+4. `npm run skynet -- plan` gives the estimate. Then start `node --import tsx skynet/data.ts pull --days core,rest` in a terminal tab and leave it. If it stops, because of a reboot, a terminal restart or too many errors, just rerun it.
 5. Check `status` now and then. Names finish in priority order, so a partial pull is still useful.
 6. Before cancelling: confirm in `status` that coverage reaches 2016 for the core names, then copy `data/skynet.duckdb` somewhere safe as a backup.
 7. Cancel the subscription. The free tier keeps working for new days from June 2023 on, without open interest or vendor IV.
