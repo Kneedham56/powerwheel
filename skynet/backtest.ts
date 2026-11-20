@@ -2,7 +2,7 @@
  * Skynet backtest: replay a ruleset week by week over the historical feed, with code-only decisions.
  *
  *   npm run skynet -- backtest --ruleset kindred [--from 2018-01-01] [--to 2025-12-31] [--symbols QQQ,IWM]
- *                              [--capital 140000] [--fees 0.03] [--no-interest] [--margin-spread 0.015]
+ *                              [--fees 0.03] [--no-interest] [--margin-spread 0.015]
  *                              [--min-dollar-volume 1e8] [--quiet]
  *   npm run skynet -- parity [--from 2024-01-01] [--to 2024-06-30] [--symbols ...]
  *
@@ -12,7 +12,10 @@
  *   Wednesday  take profit or cut on the floor (yesterday's close), stop out shares, redeploy
  *   Friday     settle at the stock's close (assigned if it closed past the strike), stops, mark to market
  *
- * Results go to data/backtests/<ruleset>/<run id>/ (gitignored): run.json, weeks.csv, trades.csv, graded.csv, years.csv.
+ * Every run trades the same account (ACCOUNT): $100k, margin up to 2x the account value.
+ *
+ * Results go to data/backtests/<ruleset>/<run id>/ (gitignored): run.json (what the /skynet page reads: totals, years,
+ * weeks, trades), plus weeks.csv, trades.csv, graded.csv and years.csv for spreadsheets.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,25 +41,26 @@ import { friday, monday, wednesday, type EngineOptions } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, type Ruleset } from "./rulesets";
+import type { RunFile, RunOptions, Totals, YearRow } from "./results";
 import { loadSectors } from "./sectors";
+
+/**
+ * The account every run trades, fixed so runs compare: $100k, and margin up to 2x the account value in exposure
+ * (shares at market + short put strikes × 100), which is $200k at the start. A ruleset chooses how much of it to use
+ * (`ai.exposure`); it can't go past it.
+ */
+export const ACCOUNT = { capital: 100_000, maxLeverage: 2 } as const;
 
 // ---------------------------------------------------------------------------
 // options and the two implementations (Skynet's, and src/lib's for the parity check)
 // ---------------------------------------------------------------------------
 
-export interface SimOptions {
-  from: string;
-  to: string;
-  capital: number;
-  symbols: string[];
-  fees: number;
-  /** positive cash earns the 3-month T-bill; negative cash (margin) pays it plus `marginSpread` */
-  interest: boolean;
-  marginSpread: number;
-  /** a stock passes the size test (no history of market caps) when its 20-day average dollar volume is at least this */
-  minDollarVolume: number;
-  quiet: boolean;
-}
+/**
+ * fees: per contract. interest: positive cash earns the 3-month T-bill, negative cash (margin) pays it plus
+ * `marginSpread`. minDollarVolume: a stock passes the size test (there's no history of market caps) when its 20-day
+ * average dollar volume is at least this.
+ */
+export type SimOptions = RunOptions;
 
 interface SundayIn {
   runDate: string;
@@ -269,25 +273,6 @@ async function simulate(feed: Feed, impl: Impl, rs: Ruleset, o: SimOptions, keep
 const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const pct = (n: number | null, d = 1) => (n === null || !Number.isFinite(n) ? "—" : `${n >= 0 ? "+" : ""}${(n * 100).toFixed(d)}%`);
 
-export interface YearRow {
-  year: string;
-  split: "train" | "validate" | "final exam" | "other";
-  weeks: number;
-  return: number;
-  spy_return: number;
-  excess: number;
-  max_drawdown: number;
-  spy_max_drawdown: number;
-  trades: number;
-  wins: number;
-  losses: number;
-  win_rate: number | null;
-  assigned: number;
-  called_away: number;
-  shares_stopped: number;
-  net_premium: number;
-  avg_leverage: number;
-}
 
 const split = (y: string): YearRow["split"] => (y >= "2018" && y <= "2023" ? "train" : y === "2024" || y === "2025" ? "validate" : y === "2026" ? "final exam" : "other");
 
@@ -337,7 +322,7 @@ export function yearRows(weeks: WeekRow[], graded: GradedTrade[], capital: numbe
   });
 }
 
-function printYears(name: string, ys: YearRow[], total: { ret: number; spy: number; cagr: number; spyCagr: number; dd: number; spyDd: number; winRate: number | null; trades: number; sharpe: number | null }) {
+function printYears(name: string, ys: YearRow[], total: Totals) {
   const head = ["Year", "Set", name, "SPY", "Excess", "Max DD", "SPY DD", "Trades", "Win rate", "Assigned", "Shares sold", "Avg lev"];
   const body = ys.map((y) => [y.year, y.split, pct(y.return), pct(y.spy_return), pct(y.excess), pct(y.max_drawdown), pct(y.spy_max_drawdown), String(y.trades), y.win_rate === null ? "—" : `${(y.win_rate * 100).toFixed(0)}% (${y.wins}-${y.losses})`, String(y.assigned), String(y.shares_stopped), `${y.avg_leverage.toFixed(2)}x`]);
   body.push(["Total", "", pct(total.ret), pct(total.spy), pct(total.ret - total.spy), pct(total.dd), pct(total.spyDd), String(total.trades), total.winRate === null ? "—" : `${(total.winRate * 100).toFixed(0)}%`, "", "", ""]);
@@ -396,7 +381,8 @@ async function setup(defaultFrom: string, defaultTo: string): Promise<{ feed: Fe
   const o: SimOptions = {
     from,
     to,
-    capital: Number(opt("capital", "140000")),
+    capital: ACCOUNT.capital,
+    maxLeverage: ACCOUNT.maxLeverage,
     symbols,
     fees: Number(opt("fees", "0.03")),
     interest: !flag("no-interest"),
@@ -411,9 +397,9 @@ async function setup(defaultFrom: string, defaultTo: string): Promise<{ feed: Fe
 export async function backtestCmd() {
   const rs = getRuleset(opt("ruleset", "kindred")!);
   const { feed, o } = await setup("2018-01-01", "2025-12-31");
-  console.log(`Backtest ${rs.name} (from rules ${rs.basedOn}), ${o.from} to ${o.to}, ${usd(o.capital)}, fees $${o.fees}/contract, interest ${o.interest ? `T-bill, margin +${(o.marginSpread * 100).toFixed(1)}%` : "off"}`);
+  console.log(`Backtest ${rs.name} (from rules ${rs.basedOn}), ${o.from} to ${o.to}, ${usd(o.capital)}, margin to ${o.maxLeverage}x, fees $${o.fees}/contract, interest ${o.interest ? `T-bill, margin +${(o.marginSpread * 100).toFixed(1)}%` : "off"}`);
   const t0 = Date.now();
-  const out = await simulate(feed, skynetImpl(rs, { fees: o.fees }), rs, o);
+  const out = await simulate(feed, skynetImpl(rs, { fees: o.fees, maxLeverage: o.maxLeverage }), rs, o);
   if (!out.weeks.length) throw new Error("no weeks were run");
 
   const closes: Record<string, number> = {};
@@ -430,7 +416,7 @@ export async function backtestCmd() {
   const wr = out.weeks.map((w) => w.ai_week_return ?? 0);
   const m = wr.reduce((a, b) => a + b, 0) / wr.length;
   const sd = Math.sqrt(wr.reduce((a, b) => a + (b - m) ** 2, 0) / wr.length);
-  const total = {
+  const total: Totals = {
     ret: last.ai_value / o.capital - 1,
     spy: (last.opp_value ?? o.capital) / o.capital - 1,
     cagr: (last.ai_value / o.capital) ** (1 / yrs) - 1,
@@ -451,8 +437,22 @@ export async function backtestCmd() {
   const id = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
   const dir = join(DATA_DIR, "backtests", rs.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), `${o.from}_${o.to}_${id}`);
   mkdirSync(dir, { recursive: true });
-  const run = { ruleset: rs, options: o, ran_at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000), total, years, notes: out.notes, interest: out.interest, end_state: out.state };
-  writeFileSync(join(dir, "run.json"), JSON.stringify(run, null, 1));
+  const run: RunFile = {
+    format: 2,
+    ruleset: rs,
+    options: o,
+    ran_at: new Date().toISOString(),
+    seconds: Math.round((Date.now() - t0) / 1000),
+    total,
+    years,
+    notes: out.notes,
+    interest: out.interest,
+    weeks: out.weeks,
+    trades: out.trades,
+    graded,
+    end_state: out.state,
+  };
+  writeFileSync(join(dir, "run.json"), JSON.stringify(run));
   writeFileSync(join(dir, "weeks.csv"), csv(out.weeks.map((w) => ({ ...w, spy_value: w.opp_value, spy_return: w.opp_return, spy_drawdown: w.opp_drawdown }))));
   writeFileSync(join(dir, "trades.csv"), csv(out.trades));
   writeFileSync(join(dir, "graded.csv"), csv(graded.map(({ hold, ...g }) => ({ ...g, hold_close: hold?.close ?? null, hold_score: hold?.score ?? null, hold_edge: hold?.edge ?? null }))));
@@ -468,7 +468,7 @@ export async function parityCmd() {
   const { feed, o } = await setup("2024-01-01", "2024-06-30");
   const po: SimOptions = { ...o, fees: 0, interest: false, quiet: true };
   const live = liveRuleset(RULES, AI, RULES_VERSION);
-  const a = await simulate(feed, skynetImpl(live, { fees: 0 }), live, po, true);
+  const a = await simulate(feed, skynetImpl(live, { fees: 0, maxLeverage: Infinity }), live, po, true);
   const b = await simulate(feed, liveImpl, live, po, true);
   const strip = (t: Trade) => ({ ...t, rules_version: "" });
   let bad = 0;

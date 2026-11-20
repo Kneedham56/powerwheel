@@ -10,7 +10,7 @@ In Windows PowerShell, type `npm.cmd` instead of `npm`.
 
 ```
 npm run skynet -- backtest --ruleset kindred [--from 2018-01-01] [--to 2025-12-31] [--symbols QQQ,IWM,TSLA]
-                           [--capital 140000] [--fees 0.03] [--no-interest] [--margin-spread 0.015]
+                           [--fees 0.03] [--no-interest] [--margin-spread 0.015]
                            [--min-dollar-volume 1e8] [--quiet]
 npm run skynet -- parity [--from 2024-01-01] [--to 2024-06-30]     # Skynet's code vs src/lib, same answers?
 npm run skynet -- sectors                                         # data/sectors.json from the prep reports
@@ -18,7 +18,26 @@ npm run skynet -- sectors                                         # data/sectors
 
 - The backtest reads Parquet through an in-memory DuckDB, so it runs while a pull holds `data/skynet.duckdb`.
 - Without `--symbols` it uses every symbol the pull has finished (`data/progress.json`). That list grows during the paid month, so results change between runs. `run.json` records which symbols a run used.
-- A full 2018–2025 run on about 10 symbols takes about 12 seconds.
+- A full 2018–2025 run takes about 12 seconds on 10 symbols and about 70 seconds on 100.
+- **See the results** at http://localhost:3000/skynet (`npm run dev`). The page reads `data/backtests` on this machine, so a deployed copy shows nothing. It has:
+  - a run picker
+  - the totals against SPY
+  - account value by week against SPY
+  - the run's settings
+  - a year-by-year table; click a year to open its weeks, and a week to see its trades (the skipped candidates are folded away)
+
+## The account
+
+Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs compare.
+- It starts with **$100,000**.
+- **Margin is capped at 2x the account value** in exposure: shares at market plus short put strikes × 100. That's $200k at the start, and it moves with the account.
+- A ruleset decides how much of that to use (`ai.exposure`: the Monday and Wednesday targets and a ceiling), but it can't go past the 2x cap.
+- The research knobs live in the ruleset, not the account:
+  - minimum weekly return on the strike (`ai.minWeekly`)
+  - exposure targets
+  - per-ticker and per-theme caps
+  - strike distance
+  - take-profit
 
 ## Rulesets
 
@@ -65,7 +84,7 @@ It works the same way the race does (`src/lib/race.ts`, [RACE.md](RACE.md)), fro
 
 Each run writes `data/backtests/<ruleset>/<from>_<to>_<timestamp>/` (gitignored, never commit it):
 
-- `run.json`: the ruleset, the options, the totals and years, and the end state
+- `run.json`: everything the `/skynet` page reads (format 2): the ruleset, the options, the totals and years, every week, every trade, the graded trades and the end state. Runs from before format 2 show up in the picker, but you have to rerun them to view them.
 - `weeks.csv`: one row per week: value, return, drawdown, leverage, premium, counts, and `spy_*` for the benchmark
 - `trades.csv`: every sale, buyback, expiry, assignment, share sale and skip, each with a note saying why
 - `graded.csv`: closed trades scored the way the race's review scores them (win = net premium after the move past the strike)
