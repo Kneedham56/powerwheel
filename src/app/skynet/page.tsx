@@ -133,7 +133,7 @@ function Years({ run, runId }: { run: RunFile; runId: string }) {
         </div>
         {run.years.map((y) => (
           <Expandable key={y.year} cols={YEAR_COLS} cells={yearCells(y)}>
-            <Weeks weeks={run.weeks.filter((w) => w.date.startsWith(y.year))} runId={runId} />
+            <Weeks weeks={run.weeks.filter((w) => w.date.startsWith(y.year))} runId={runId} title={`${run.ruleset.name} trades`} />
           </Expandable>
         ))}
       </div>
@@ -159,7 +159,7 @@ function yearCells(y: YearRow) {
   ];
 }
 
-function Weeks({ weeks, runId }: { weeks: WeekRowData[]; runId: string }) {
+function Weeks({ weeks, runId, title }: { weeks: WeekRowData[]; runId: string; title: string }) {
   return (
     <div className="gtable min-w-[52rem]">
       <div className={`ghead ${WEEK_COLS}`}>
@@ -182,6 +182,7 @@ function Weeks({ weeks, runId }: { weeks: WeekRowData[]; runId: string }) {
             runId={runId}
             week={w.week}
             note={w.note}
+            title={title}
             cells={[
               dayLabel(w.date),
               usd(w.ai_value),
