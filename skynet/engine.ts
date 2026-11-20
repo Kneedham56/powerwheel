@@ -8,6 +8,7 @@
  * Differences from the race, on purpose:
  *  - no opponent account: the week row's opp_* columns carry a benchmark (SPY buy and hold) instead
  *  - an optional per-contract fee, charged on every option fill and on assignment or call-away
+ *  - an account margin limit on top of the ruleset's exposure targets (the same for every run)
  *  - no run guard by wall clock (the backtest calls the runs in order)
  *
  * Pure functions only.
@@ -37,6 +38,11 @@ import type { Ruleset } from "./rulesets";
 export interface EngineOptions {
   /** dollars per contract on each option trade and on assignment or call-away (0 = the race) */
   fees: number;
+  /**
+   * The account's margin limit: new puts never take exposure past this multiple of the account value, whatever the
+   * ruleset asks for (Infinity = the race, where the ruleset's own ceiling is the only limit).
+   */
+  maxLeverage: number;
 }
 
 const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
@@ -132,7 +138,7 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
     const per = k * 100;
     const tickerRoom = A.perTicker * v - nameExposure(s, c.symbol, spots);
     const themeRoom = A.perTheme * v - themeExposure(s, c.theme, spots);
-    const totalRoom = Math.min(exposureTarget, A.exposure.ceiling) * v - exposure(s, spots);
+    const totalRoom = Math.min(exposureTarget, A.exposure.ceiling, o.maxLeverage) * v - exposure(s, spots);
     let n = Math.floor(Math.min(tickerRoom, themeRoom, totalRoom) / per + 1e-9);
     if (n < 1 && nameExposure(s, c.symbol, spots) === 0 && per <= A.oneContract * v && per <= themeRoom && per <= totalRoom) n = 1;
     if (n < 1) {

@@ -17,6 +17,7 @@ const NAV = [
   { href: "/", label: "Reports" },
   { href: "/prep", label: "Weekly prep" },
   { href: "/race", label: "AI race" },
+  { href: "/skynet", label: "Skynet" },
   { href: "/activity", label: "Activity" },
   { href: "/import", label: "Import" },
   { href: "/snapshots", label: "Account value" },
