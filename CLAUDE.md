@@ -40,6 +40,7 @@ The AI forecasting / watchlist ideas in `docs/PRD-v1.0.md` are **parked**; curre
 - Skynet rulesets are named after random League of Legends champions, never reused. Sweep variants hang under a parent, like "Ahri · delta 0.22".
 - `skynet/` holds the code. Data: `skynet/data.ts` (`npm run skynet -- …`) pulls ThetaData (through the local Theta Terminal) plus Cboe and FRED into `data/skynet.duckdb`, which is gitignored and licensed personal-use only: never commit or share it. Runbook: `docs/SKYNET-DATA.md`.
 - Decisions inside a backtest run are pure code. An AI can't unlearn market history, so it only works between runs.
+- Backtest: `npm run skynet -- backtest --ruleset kindred [--from --to --symbols]` (runbook `docs/SKYNET-BACKTEST.md`). Rulesets are frozen copies in `skynet/rulesets.ts` (Kindred = live rules 2026.11.16.1); `skynet/logic.ts` + `skynet/engine.ts` mirror the RULES-reading parts of rules/prep/race with the ruleset passed in, and `npm run skynet -- parity` must pass after any change to rules.ts, prep.ts or race.ts. Results go to `data/backtests/` (gitignored).
 
 ## Auth & demo
 - `src/lib/auth.ts` + `src/proxy.ts`: single-password gate (`APP_PASSWORD`, `AUTH_SECRET`); login/logout are route handlers under `src/app/auth/`. Server actions re-check via `requireWrite()` in `app/actions.ts`.

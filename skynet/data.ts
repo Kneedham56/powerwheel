@@ -8,6 +8,7 @@
  *                          [--concurrency 4] [--max-dte N] [--no-oi] [--no-stock]
  *   npm run skynet -- ref                        VIX family (Cboe), 3-month T-bill (FRED), Theta rates
  *   npm run skynet -- status
+ *   npm run skynet -- sectors | backtest | parity   (the backtest: skynet/backtest.ts, docs/SKYNET-BACKTEST.md)
  *
  * Pulls are resumable: run the same command again and it skips what is already stored.
  * Days are fetched newest-first, so a tier's history limit is found on the first refused day.
@@ -630,12 +631,16 @@ async function status(store: Store) {
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // the backtest reads Parquet only, so it runs while a pull holds the database
+  if (cmd === "backtest") return (await import("./backtest")).backtestCmd();
+  if (cmd === "parity") return (await import("./backtest")).parityCmd();
+  if (cmd === "sectors") return (await import("./sectors")).sectorsCmd();
   if (cmd === "priority") return priority();
   if (cmd === "bars") return bars();
   const cmds: Record<string, (s: Store) => Promise<void>> = { universe, plan, pull, ref, status, export: exportAll };
   const fn = cmd ? cmds[cmd] : undefined;
   if (!fn) {
-    console.log("usage: npm run skynet -- universe | priority | plan | pull | ref | status | export   (see docs/SKYNET-DATA.md)");
+    console.log("usage: npm run skynet -- universe | priority | plan | pull | ref | bars | status | export | sectors | backtest | parity   (see docs/SKYNET-DATA.md, docs/SKYNET-BACKTEST.md)");
     process.exit(1);
   }
   let store: Store;

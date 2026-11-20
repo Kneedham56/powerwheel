@@ -1,6 +1,6 @@
 # Skynet data runbook
 
-Skynet is the backtesting research bot. It is separate from the live rules, prep and race. This doc covers its historical market data: what gets pulled, from where, and how to run the one-month bulk download.
+Skynet is the backtesting research bot. It is separate from the live rules, prep and race. This doc covers its historical market data: what gets pulled, from where, and how to run the one-month bulk download. The backtest that replays rulesets over this data has its own runbook: [SKYNET-BACKTEST.md](SKYNET-BACKTEST.md).
 
 Everything lands in a local DuckDB file, `data/skynet.duckdb` (override with `SKYNET_DB`). The `data/` folder is gitignored. **The data is licensed for personal use only: never commit it, upload it or share it.**
 
