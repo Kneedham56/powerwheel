@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { RunPicker, SkynetChart } from "@/components/skynet/SkynetChart";
-import { Expandable, OptionTypePill, PageTitle, Stat, param } from "@/components/ui";
-import type { Trade, WeekRow } from "@/lib/race";
+import { WeekRow } from "@/components/skynet/WeekRow";
+import { Expandable, PageTitle, Stat, param } from "@/components/ui";
+import type { WeekRow as WeekRowData } from "@/lib/race";
 import { dayLabel } from "@/lib/rules";
 import { listRuns, loadRun } from "@/lib/skynet-runs";
 import type { RunFile, YearRow } from "../../../skynet/results";
@@ -17,7 +17,6 @@ export const metadata: Metadata = {
 const spct = (n: number | null | undefined, d = 1) => (n === null || n === undefined || !Number.isFinite(n) ? "—" : `${n >= 0 ? "+" : ""}${(n * 100).toFixed(d)}%`);
 const pctU = (n: number | null | undefined, d = 1) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(d)}%`);
 const usd = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }));
-const px = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("en-US", { maximumFractionDigits: 2 }));
 const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "text-gain" : "text-loss");
 const SPLIT_STYLE: Record<string, string> = {
   train: "bg-accent/15 text-accent",
@@ -70,7 +69,7 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
         </div>
         <SkynetChart name={run.ruleset.name} capital={run.options.capital} data={run.weeks.map((w) => ({ date: w.date, value: w.ai_value, spy: w.opp_value }))} />
       </section>
-      <Years run={run} runId={id} open={param(sp, "year")} />
+      <Years run={run} runId={id} />
       <Settings run={run} />
       {run.notes.length > 0 && (
         <section className="card text-xs text-muted">
@@ -106,12 +105,11 @@ function Summary({ run }: { run: RunFile }) {
   );
 }
 
-/** Years as rows; the open one (?year=) lists its weeks, each expanding to its trades. One year at a time keeps the page light. */
-function Years({ run, runId, open }: { run: RunFile; runId: string; open: string | undefined }) {
-  const weeks = run.weeks.filter((w) => w.date.startsWith(open ?? "-"));
-  const tradesByWeek = new Map<number, Trade[]>();
-  for (const t of run.trades) if (weeks.some((w) => w.week === t.week)) tradesByWeek.set(t.week, [...(tradesByWeek.get(t.week) ?? []), t]);
-  const href = (y: string | null) => `/skynet?${new URLSearchParams({ run: runId, ...(y ? { year: y } : {}) }).toString()}${y ? `#y${y}` : ""}`;
+/**
+ * Years as dropdowns of their weeks, and weeks as dropdowns of their trades. The weeks are on the page from the start
+ * (a few hundred rows); a week's trades load when it's opened, so the page doesn't carry thousands of trade rows.
+ */
+function Years({ run, runId }: { run: RunFile; runId: string }) {
   return (
     <section className="card overflow-x-auto">
       <div className="mb-2 flex items-baseline justify-between">
@@ -133,26 +131,11 @@ function Years({ run, runId, open }: { run: RunFile; runId: string; open: string
           <span>Avg lev</span>
           <span>Net premium</span>
         </div>
-        {run.years.map((y) => {
-          const isOpen = y.year === open;
-          return (
-            <div key={y.year} id={`y${y.year}`} className="scroll-mt-4">
-              <Link href={href(isOpen ? null : y.year)} scroll={!isOpen} className={`grow ${YEAR_COLS} hover:bg-background`}>
-                <span className="text-muted">{isOpen ? "▾" : "▸"}</span>
-                {yearCells(y).map((c, i) => (
-                  <span key={i} className={i === 0 ? "text-left font-medium" : undefined}>
-                    {c}
-                  </span>
-                ))}
-              </Link>
-              {isOpen && (
-                <div className="drill">
-                  <Weeks weeks={weeks} trades={tradesByWeek} />
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {run.years.map((y) => (
+          <Expandable key={y.year} cols={YEAR_COLS} cells={yearCells(y)}>
+            <Weeks weeks={run.weeks.filter((w) => w.date.startsWith(y.year))} runId={runId} />
+          </Expandable>
+        ))}
       </div>
     </section>
   );
@@ -176,7 +159,7 @@ function yearCells(y: YearRow) {
   ];
 }
 
-function Weeks({ weeks, trades }: { weeks: WeekRow[]; trades: Map<number, Trade[]> }) {
+function Weeks({ weeks, runId }: { weeks: WeekRowData[]; runId: string }) {
   return (
     <div className="gtable min-w-[52rem]">
       <div className={`ghead ${WEEK_COLS}`}>
@@ -192,11 +175,13 @@ function Weeks({ weeks, trades }: { weeks: WeekRow[]; trades: Map<number, Trade[
         <span>Assigned</span>
       </div>
       {weeks.map((w) => {
-        const ts = trades.get(w.week) ?? [];
         return (
-          <Expandable
+          <WeekRow
             key={w.week}
             cols={WEEK_COLS}
+            runId={runId}
+            week={w.week}
+            note={w.note}
             cells={[
               dayLabel(w.date),
               usd(w.ai_value),
@@ -208,72 +193,10 @@ function Weeks({ weeks, trades }: { weeks: WeekRow[]; trades: Map<number, Trade[
               String(w.counts.puts_sold ?? 0),
               String(w.counts.puts_assigned ?? 0),
             ]}
-          >
-            {ts.length ? <WeekTrades trades={ts} note={w.note} /> : undefined}
-          </Expandable>
+          />
         );
       })}
     </div>
-  );
-}
-
-function WeekTrades({ trades, note }: { trades: Trade[]; note: string }) {
-  const done = trades.filter((t) => t.action !== "Skipped");
-  const skipped = trades.filter((t) => t.action === "Skipped");
-  return (
-    <div className="space-y-2">
-      {note && <p className="text-xs text-muted">{note}</p>}
-      {done.length > 0 ? <TradeTable trades={done} /> : <p className="text-xs text-muted">No trades this week.</p>}
-      {skipped.length > 0 && (
-        <details>
-          <summary className="cursor-pointer text-xs text-muted hover:text-foreground">
-            {skipped.length} candidate{skipped.length > 1 ? "s" : ""} skipped
-          </summary>
-          <div className="mt-1">
-            <TradeTable trades={skipped} />
-          </div>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function TradeTable({ trades }: { trades: Trade[] }) {
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>Day</th>
-          <th>Action</th>
-          <th>Ticker</th>
-          <th>Type</th>
-          <th>Strike</th>
-          <th>Expires</th>
-          <th>Qty</th>
-          <th>Price</th>
-          <th>Bid / ask</th>
-          <th>Cash</th>
-          <th className="text-left!">Why</th>
-        </tr>
-      </thead>
-      <tbody>
-        {trades.map((t) => (
-          <tr key={t.id}>
-            <td>{dayLabel(t.date)}</td>
-            <td className="font-medium">{t.action}</td>
-            <td className="font-medium">{t.symbol ?? "—"}</td>
-            <td>{t.type === "put" || t.type === "call" ? <OptionTypePill type={t.type} /> : (t.type ?? "")}</td>
-            <td>{px(t.strike)}</td>
-            <td>{t.expiration ? dayLabel(t.expiration) : "—"}</td>
-            <td>{t.qty ?? "—"}</td>
-            <td>{px(t.price)}</td>
-            <td>{t.bid !== null || t.ask !== null ? `${px(t.bid)} / ${px(t.ask)}` : "—"}</td>
-            <td className={tone(t.cash)}>{t.cash === null ? "—" : usd(t.cash)}</td>
-            <td className="max-w-[28rem] text-left! whitespace-normal! text-muted">{t.note}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   );
 }
 
