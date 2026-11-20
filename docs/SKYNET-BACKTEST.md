@@ -24,7 +24,7 @@ npm run skynet -- sectors                                         # data/sectors
   - the totals against SPY
   - account value by week against SPY
   - the run's settings
-  - a year-by-year table; click a year to open its weeks, and a week to see its trades (the skipped candidates are folded away)
+  - a year-by-year table; click a year to open its weeks, and a week to see its trades (the skipped candidates are folded away). A week's trades load only when you open it, which keeps the page light.
 
 ## The account
 
@@ -84,7 +84,7 @@ It works the same way the race does (`src/lib/race.ts`, [RACE.md](RACE.md)), fro
 
 Each run writes `data/backtests/<ruleset>/<from>_<to>_<timestamp>/` (gitignored, never commit it):
 
-- `run.json`: everything the `/skynet` page reads (format 2): the ruleset, the options, the totals and years, every week, every trade, the graded trades and the end state. Runs from before format 2 show up in the picker, but you have to rerun them to view them.
+- `run.json`: everything the `/skynet` page reads (format 2): the ruleset, the options, the totals and years, every week, every trade, the graded trades and the end state. Runs from before format 2 don't appear on the page; rerun them to see them.
 - `weeks.csv`: one row per week: value, return, drawdown, leverage, premium, counts, and `spy_*` for the benchmark
 - `trades.csv`: every sale, buyback, expiry, assignment, share sale and skip, each with a note saying why
 - `graded.csv`: closed trades scored the way the race's review scores them (win = net premium after the move past the strike)
