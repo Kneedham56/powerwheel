@@ -1,16 +1,14 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { OptionTypePill } from "@/components/ui";
+import { WeekTrades } from "@/components/race/WeekTrades";
 import type { Trade } from "@/lib/race";
-import { dayLabel } from "@/lib/rules";
 
-const px = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("en-US", { maximumFractionDigits: 2 }));
-const usd = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-const tone = (n: number | null | undefined) => (!n ? "" : n > 0 ? "text-gain" : "text-loss");
-
-/** A week's row; opening it loads that week's trades from the run (so the page doesn't carry every trade up front). */
-export function WeekRow({ cols, cells, runId, week, note }: { cols: string; cells: ReactNode[]; runId: string; week: number; note: string }) {
+/**
+ * A backtest week's row; opening it loads that week's trades from the run (so the page doesn't carry every trade up
+ * front) and shows them the way the AI race page does.
+ */
+export function WeekRow({ cols, cells, runId, week, note, title }: { cols: string; cells: ReactNode[]; runId: string; week: number; note: string; title: string }) {
   const [trades, setTrades] = useState<Trade[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = async () => {
@@ -34,69 +32,18 @@ export function WeekRow({ cols, cells, runId, week, note }: { cols: string; cell
           </span>
         ))}
       </summary>
-      <div className="drill">
-        {note && <p className="mb-2 text-xs text-muted">{note}</p>}
-        {error ? <p className="text-xs text-loss">{error}</p> : trades ? <WeekTrades trades={trades} /> : <p className="text-xs text-muted">Loading…</p>}
+      <div className="drill space-y-3">
+        {note && <p className="text-xs text-muted">{note}</p>}
+        {error ? (
+          <p className="text-xs text-loss">{error}</p>
+        ) : !trades ? (
+          <p className="text-xs text-muted">Loading…</p>
+        ) : trades.length ? (
+          <WeekTrades trades={trades} title={title} />
+        ) : (
+          <p className="text-xs text-muted">No trades this week.</p>
+        )}
       </div>
     </details>
-  );
-}
-
-function WeekTrades({ trades }: { trades: Trade[] }) {
-  const done = trades.filter((t) => t.action !== "Skipped");
-  const skipped = trades.filter((t) => t.action === "Skipped");
-  return (
-    <div className="space-y-2">
-      {done.length > 0 ? <TradeTable trades={done} /> : <p className="text-xs text-muted">No trades this week.</p>}
-      {skipped.length > 0 && (
-        <details>
-          <summary className="cursor-pointer text-xs text-muted hover:text-foreground">
-            {skipped.length} candidate{skipped.length > 1 ? "s" : ""} skipped
-          </summary>
-          <div className="mt-1">
-            <TradeTable trades={skipped} />
-          </div>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function TradeTable({ trades }: { trades: Trade[] }) {
-  return (
-    <table>
-      <thead>
-        <tr>
-          <th>Day</th>
-          <th>Action</th>
-          <th>Ticker</th>
-          <th>Type</th>
-          <th>Strike</th>
-          <th>Expires</th>
-          <th>Qty</th>
-          <th>Price</th>
-          <th>Bid / ask</th>
-          <th>Cash</th>
-          <th className="text-left!">Why</th>
-        </tr>
-      </thead>
-      <tbody>
-        {trades.map((t) => (
-          <tr key={t.id}>
-            <td>{dayLabel(t.date)}</td>
-            <td className="font-medium">{t.action}</td>
-            <td className="font-medium">{t.symbol ?? "—"}</td>
-            <td>{t.type === "put" || t.type === "call" ? <OptionTypePill type={t.type} /> : (t.type ?? "")}</td>
-            <td>{px(t.strike)}</td>
-            <td>{t.expiration ? dayLabel(t.expiration) : "—"}</td>
-            <td>{t.qty ?? "—"}</td>
-            <td>{px(t.price)}</td>
-            <td>{t.bid !== null || t.ask !== null ? `${px(t.bid)} / ${px(t.ask)}` : "—"}</td>
-            <td className={tone(t.cash)}>{t.cash === null ? "—" : usd(t.cash)}</td>
-            <td className="max-w-[28rem] text-left! whitespace-normal! text-muted">{t.note}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
   );
 }
