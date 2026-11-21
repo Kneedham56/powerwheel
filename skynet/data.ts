@@ -181,7 +181,7 @@ async function weeklyUniverse(store: Store, from: string, to: string, minMonths:
     SELECT w.symbol, w.weekly_months, w.exps, strftime(e.f, '%Y-%m-%d') AS first_exp, strftime(e.l, '%Y-%m-%d') AS last_exp
     FROM w JOIN e USING (symbol)
     WHERE w.weekly_months >= ${minMonths}
-    ORDER BY w.weekly_months DESC, w.exps DESC`);
+    ORDER BY w.weekly_months DESC, w.exps DESC, w.symbol`);
   const keep = rows.filter((r) => !EXCLUDE.has(r.symbol));
   const core = CORE.map((s) => keep.find((r) => r.symbol === s)).filter((r): r is USym => !!r);
   return [...core, ...keep.filter((r) => !CORE.includes(r.symbol))];
@@ -374,6 +374,22 @@ async function pull(store: Store) {
   }
 }
 
+/** What's already fetched for a symbol, in one query: days per endpoint, and days whose greeks had rows. */
+async function doneState(store: Store, sym: string) {
+  const rows = await store.all<{ e: string; d: string; n: number }>(
+    `SELECT endpoint AS e, strftime(day, '%Y-%m-%d') AS d, rows AS n FROM fetch_log
+     WHERE symbol = ${q(sym)} AND status IN ('ok', 'no_data') AND endpoint IN ('option_greeks', 'option_eod', 'option_oi', 'stock_eod')`,
+  );
+  const set = (e: string) => new Set(rows.filter((r) => r.e === e).map((r) => r.d));
+  return {
+    doneG: set("option_greeks"),
+    doneE: set("option_eod"),
+    doneO: set("option_oi"),
+    doneS: set("stock_eod"),
+    greeksRows: new Set(rows.filter((r) => r.e === "option_greeks" && r.n > 0).map((r) => r.d)),
+  };
+}
+
 async function pullPass(store: Store, mode: DaysMode) {
   const { from, to } = window();
   const conc = Number(opt("concurrency", "4"));
@@ -389,7 +405,35 @@ async function pullPass(store: Store, mode: DaysMode) {
   console.log(`Pulling ${fmtN(u.length)} symbols, ${from} .. ${to}, days: ${mode}, ${conc} requests at a time. Ctrl-C stops cleanly; rerun to resume.`);
   const t0 = Date.now();
   let errors = 0;
-  const finished: { symbol: string; from: string; to: string; requests: number; rows: number; minutes: number }[] = [];
+  // The finished list carries over from earlier runs (a restart used to reset it, and backtests
+  // read it to know which symbols are complete). A symbol finished in the core pass stays usable
+  // while the rest pass runs; its entry is replaced when it finishes again.
+  type Fin = { symbol: string; pass?: string; from: string; to: string; requests: number; rows: number; minutes: number };
+  let finished: Fin[] = [];
+  try {
+    const prev = JSON.parse(readFileSync(PROGRESS_FILE, "utf8")) as { window?: { from: string }; finished?: Fin[] };
+    if (prev.window?.from === from) finished = prev.finished ?? [];
+  } catch {}
+
+  // Startup sweep: symbols with nothing left to fetch in this pass go straight onto the finished
+  // list, so after a restart backtests see them without waiting for the loop to come round.
+  const complete = new Set<string>();
+  const sweep0 = Date.now();
+  for (const s of u) {
+    if (stopping) break;
+    const { start, end } = symRange(s, from, to);
+    if (start > end) continue;
+    const st = await doneState(store, s.symbol);
+    // The newest days are always new on a fresh run; judge completeness on the history before them.
+    const cutoff = addDays(to, -7);
+    const sc = schedule(calendar.filter((d) => d >= start && d <= end && d <= cutoff), mode);
+    const todo = sc.quotes.filter((d) => !st.greeksRows.has(d) && !st.doneE.has(d)).length + (wantOi ? sc.oi.filter((d) => !st.doneO.has(d)).length : 0);
+    if (todo) continue;
+    complete.add(s.symbol);
+    if (!finished.some((f) => f.symbol === s.symbol)) finished.push({ symbol: s.symbol, pass: mode, from: start, to: end, requests: 0, rows: 0, minutes: 0 });
+  }
+  writeFileSync(PROGRESS_FILE, JSON.stringify({ updated: new Date().toISOString(), pass: mode, window: { from, to }, total: u.length, done: complete.size, next: null, elapsed: "0m", eta: "?", errors: 0, finished }, null, 1));
+  console.log(`  ${fmtN(complete.size)} symbols already complete for this pass (checked in ${fmtDur(Date.now() - sweep0)}).`);
 
   for (let i = 0; i < u.length && !stopping; i++) {
     const free = freeBytes();
@@ -402,9 +446,7 @@ async function pullPass(store: Store, mode: DaysMode) {
     const { start, end } = symRange(s, from, to);
     if (start > end) continue;
     const ts = Date.now();
-    const [doneG, doneE, doneO, doneS] = await Promise.all(
-      ["option_greeks", "option_eod", "option_oi", "stock_eod"].map((e) => store.done(e, sym)),
-    );
+    const { doneG, doneE, doneO, doneS, greeksRows } = await doneState(store, sym);
     const stat = { req: 0, rows: 0, ms: 0, empty: 0 };
 
     const fetchDay = async (endpoint: string, path: string, table: string, g: Gate, day: string) => {
@@ -431,9 +473,6 @@ async function pullPass(store: Store, mode: DaysMode) {
 
     // Greeks rows carry the full quote, so plain quotes are only fetched when greeks gave nothing
     // (not in the plan, or before the vendor's greeks history starts: early 2017 on Standard).
-    const greeksRows = new Set(
-      (await store.all<{ d: string }>(`SELECT strftime(day, '%Y-%m-%d') AS d FROM fetch_log WHERE endpoint = 'option_greeks' AND symbol = ${q(sym)} AND rows > 0`)).map((r) => r.d),
-    );
     const symDays = calendar.filter((d) => d >= start && d <= end);
     const sched = schedule(symDays, mode);
     const quoteDays = new Set(sched.quotes);
@@ -485,7 +524,10 @@ async function pullPass(store: Store, mode: DaysMode) {
     await store.exportSymbol(sym);
     const el = Date.now() - t0;
     const eta = (el / (i + 1)) * (u.length - i - 1);
-    if (!stopping) finished.push({ symbol: sym, from: start, to: end, requests: stat.req, rows: stat.rows, minutes: Math.round((Date.now() - ts) / 60_000) });
+    if (!stopping) {
+      finished = finished.filter((f) => f.symbol !== sym);
+      finished.push({ symbol: sym, pass: mode, from: start, to: end, requests: stat.req, rows: stat.rows, minutes: Math.round((Date.now() - ts) / 60_000) });
+    }
     writeFileSync(
       PROGRESS_FILE,
       JSON.stringify({ updated: new Date().toISOString(), pass: mode, window: { from, to }, total: u.length, done: i + 1, next: u[i + 1]?.symbol ?? null, elapsed: fmtDur(el), eta: fmtDur(eta), errors, finished }, null, 1),
