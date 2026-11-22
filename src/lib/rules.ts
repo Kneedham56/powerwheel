@@ -8,7 +8,7 @@
  * Pure functions only: no Next.js, no database, no network (scripts import this directly).
  */
 
-export const RULES_VERSION = "2026.11.16.1";
+export const RULES_VERSION = "2026.11.22";
 
 export const RULES = {
   /** trading days used for the rotation map and the trend stage (≈ 4 and 13 weeks) */
@@ -63,13 +63,15 @@ export const AI = {
   /** fills: sell at mid − share × spread, buy back at mid + share × spread */
   fillSpreadShare: 0.25,
   /** skip a put paying less than this share of the strike for the week */
-  minWeekly: 0.0025,
+  minWeekly: 0.005,
   /** Wednesday: buy back a put once this much of its premium is captured, then redeploy */
   takeProfit: 0.5,
   /** covered calls on assigned shares: at or above max(cost, price + `moves` expected moves), paying at least `minWeekly` */
   coveredCall: { use: true, moves: 1, minWeekly: 0.002 },
   /** sell assigned shares on a close below the floor (the prior 20-session low) */
   stopBelowFloor: true,
+  /** fresh assignments: the stop waits this many calendar days after the assignment, so the shares get a week of covered calls first */
+  stopGraceDays: 7,
 } as const;
 
 // ---------------------------------------------------------------------------

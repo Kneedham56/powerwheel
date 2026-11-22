@@ -17,6 +17,7 @@ import type { CandidateRow } from "../src/lib/prep";
 import {
   accountValue,
   exposure,
+  inStopGrace,
   r2,
   rankedCandidates,
   spreadOf,
@@ -271,6 +272,7 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
 
   if (rs.ai.stopBelowFloor) {
     for (const l of [...s.lots]) {
+      if (inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const bars = inp.bars[l.symbol];
       const floor = stopFloor(rs, bars);
       const close = bars?.at(-1)?.close;
@@ -338,6 +340,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
   }
   if (rs.ai.stopBelowFloor && inp.bars) {
     for (const l of [...s.lots]) {
+      if (inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const floor = stopFloor(rs, inp.bars[l.symbol]);
       const close = inp.closes[l.symbol];
       if (floor !== null && close !== undefined && close < floor) sellLot(rs, o, s, L, l, close, `Closed at ${r2(close)}, below its floor of ${r2(floor)}`);

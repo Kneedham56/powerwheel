@@ -208,6 +208,11 @@ function guard(s: RaceState, kind: RunKind, date: string) {
   if (kind === "wednesday" && !s.current) throw new Refused("no week is open: the Monday entry hasn't run this week");
 }
 
+/** True while a lot is too fresh for the stop: assigned fewer than `graceDays` calendar days before `date`. */
+export function inStopGrace(opened: string, date: string, graceDays: number) {
+  return (Date.parse(`${date}T21:00:00Z`) - Date.parse(`${opened}T21:00:00Z`)) / 864e5 < graceDays;
+}
+
 /** The floor the stop uses: the lowest low of the 20 sessions before the last bar. */
 function stopFloor(bars: Bar[] | undefined) {
   if (!bars || bars.length < 22) return null;
@@ -465,6 +470,7 @@ export function wednesday(s0: RaceState, inp: WednesdayInput): RunResult {
   // 2. stops on shares
   if (AI.stopBelowFloor) {
     for (const l of [...s.lots]) {
+      if (inStopGrace(l.opened, inp.date, AI.stopGraceDays)) continue;
       const bars = inp.bars[l.symbol];
       const floor = stopFloor(bars);
       const close = bars?.at(-1)?.close;
@@ -538,6 +544,7 @@ export function friday(s0: RaceState, inp: FridayInput): RunResult {
   }
   if (AI.stopBelowFloor && inp.bars) {
     for (const l of [...s.lots]) {
+      if (inStopGrace(l.opened, inp.date, AI.stopGraceDays)) continue;
       const floor = stopFloor(inp.bars[l.symbol]);
       const close = inp.closes[l.symbol];
       if (floor !== null && close !== undefined && close < floor) sellLot(s, L, l, close, `Closed at ${r2(close)}, below its floor of ${r2(floor)}`);

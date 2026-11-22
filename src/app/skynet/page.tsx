@@ -214,6 +214,8 @@ function Settings({ run }: { run: RunFile }) {
     ["Minimum premium", `puts ${pctU(a.minWeekly, 2)} of the strike a week, covered calls ${pctU(a.coveredCall.minWeekly, 2)}`],
     ["Strike", `${a.strike.moves} expected move below (${a.strike.aggressiveMoves} for score ${a.strike.aggressiveMinScore}+ in a Leading group), never within ${R.strike.atrBelowFloor} ATR under the floor`],
     ["Take profit", `buy back on Wednesday at ${pctU(a.takeProfit, 0)} captured`],
+    // runs saved before rules 2026.11.22 have no stopGraceDays: their stop fired the same day
+    ["Stop on shares", a.stopBelowFloor ? `sell on a close below the floor${a.stopGraceDays ? `, starting ${a.stopGraceDays} days after the assignment` : ", from the day of the assignment"}` : "none"],
     ["Fills and costs", `mid ∓ ${a.fillSpreadShare} of the spread, $${o.fees}/contract, ${o.interest ? `cash earns the T-bill, margin pays T-bill + ${pctU(o.marginSpread, 1)}` : "no interest"}`],
     ["Symbols", `${o.symbols.length}: ${o.symbols.join(", ")}`],
     ["Ran", `${run.ran_at.slice(0, 16).replace("T", " ")} UTC in ${run.seconds}s`],
