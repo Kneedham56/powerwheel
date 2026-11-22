@@ -1,6 +1,6 @@
 # Skynet backtest runbook
 
-The backtest replays a Skynet ruleset week by week over the historical data in `data/parquet` (see [SKYNET-DATA.md](SKYNET-DATA.md)). Every decision inside a run is code. An AI can't unlearn market history, so it only works between runs: reading results, grading losses and proposing the next ruleset.
+The backtest replays a Skynet ruleset week by week over the historical data in `data/parquet` (see [SKYNET-DATA.md](SKYNET-DATA.md)). The research plan (levers, logging, phases) is [SKYNET-PLAN.md](SKYNET-PLAN.md). Every decision inside a run is code. An AI can't unlearn market history, so it only works between runs: reading results, grading losses and proposing the next ruleset.
 
 Skynet never changes `src/lib/rules.ts`, prep or the race. Kyle adopts a ruleset by copying its values into `rules.ts` and `RULES.md` himself.
 
