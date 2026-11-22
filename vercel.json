@@ -1,3 +1,4 @@
 {
-  "crons": [{ "path": "/api/keepalive", "schedule": "0 12 * * *" }]
+  "crons": [{ "path": "/api/keepalive", "schedule": "0 12 * * *" }],
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ':!skynet' ':!docs/SKYNET*' ':!src/app/skynet' ':!src/components/skynet' ':!src/lib/skynet-runs.ts'"
 }
