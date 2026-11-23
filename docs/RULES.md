@@ -1,6 +1,6 @@
 # PowerWheel rules
 
-**Version 2026.11.16.1** · the rules in force. They change often; every change gets a new version and a
+**Version 2026.11.22** · the rules in force. They change often; every change gets a new version and a
 line in the changelog at the bottom.
 
 This file is the plain-words half of the ruleset. The other half is [`src/lib/rules.ts`](../src/lib/rules.ts),
@@ -29,6 +29,9 @@ Sell cash-secured puts for weekly premium. Stay mostly in cash; owning shares is
 - Idle cash sits in a T-bill fund and doubles as put collateral.
 - Target about **0.5% of the strike per week**. More than 2% a week means the market knows something: check why
   before selling it.
+- **Kyle's goal: about 1% of account value per week** in net premium. It's a scorecard, not a rule: it never moves a
+  strike closer or exposure past section 6. At 0.5% of the strike and 1.0 to 1.2x exposure the rules earn about 0.5 to
+  0.6% a week. 1% takes rich premium (high-VIX weeks, about 0.9% of the strike at 1.1x), not more risk.
 
 ## 2. Reading the market
 
@@ -111,11 +114,17 @@ exactly when support breaks, because everyone's stops sit there too.
 
 - **Profit velocity:** if you have captured X% of the premium in well under X% of the time, close it, especially with
   earnings or a headline ahead.
+- **Buy back at 80%:** once 80% or more of the premium is captured, buy the put back and free the collateral. The
+  last 20% isn't worth a week of risk.
 - **First close below the floor:** close or roll that put the same day. Don't wait for expiration.
 - **Rolls:** only for a net credit, down and out. Two rolls on one name, then close.
 - **Assigned shares:** exit on a close-based stop (a close below the prior day's low after the bounce stalls, or a
   close below the floor), then sell puts lower if the setup is still good. Shares in a Downtrend two Sundays in a row
   get sold on the next green day.
+- **Legacy holdings:** shares bought before these rules existed (version 2026.11.16) are outside the stop and the
+  two-Sunday downtrend sale. They're held as a recovery plan, chosen as the names most likely to win back the margin
+  over a couple of months, and they join the wheel or get sold once that plan is done. Everything assigned from here
+  on follows the rules above: take the small loss.
 - **Covered calls:** only on stable names, at or above net cost, above the next resistance and outside the expected
   move. Skip them on volatile names: a stop does the hedging job better.
 - **Wash sales:** after selling at a loss, no new shares or assignable puts on the same ticker in any account (Roth
@@ -151,17 +160,26 @@ are a choice rather than a rule, the AI makes its own choice and the race shows 
 - **Size:** up to 15% of account value per ticker (one contract may reach 20%), 30% per theme.
 - **Strike:** one expected move below the price, the Sunday report's target (section 5). For a name scoring 75 or
   more in a Leading group, 0.8 of an expected move, unless that lands at or under the floor.
-- **Premium:** at least 0.25% of the strike for the week, aiming for about 1% on the best setups.
+- **Premium:** at least 0.5% of the strike for the week, aiming for about 1% on the best setups. Less than that
+  doesn't pay for an assignment.
 - **Fills:** sell at the mid minus 25% of the spread, buy back at the mid plus 25%. A real market as in section 3.
 - **Wednesday:** buy back any put with 50% or more of its premium captured, close any put whose name closed below
   its floor, then redeploy into the week's candidates.
-- **Assigned shares:** sold on a close below the floor (section 7's stop). Otherwise a covered call at or above
-  both the cost and one expected move over the price, when it pays 0.2% or more. Kyle mostly skips covered calls;
+- **Assigned shares:** sold on a close below the floor (section 7's stop), but fresh assignments get a week first: the
+  stop starts 7 days after the assignment, so the shares get one week of covered calls. Otherwise a covered call at or
+  above both the cost and one expected move over the price, when it pays 0.2% or more. Kyle mostly skips covered calls;
   the AI uses them so the race can show whether they help.
 
 ---
 
 ## Changelog
+
+- **2026.11.22:** from the race's week 3 review. The AI skips puts paying under 0.5% of the strike (was 0.25%):
+  MRK and XLU puts at about 0.4% and 0.3% earned too little to cover an assignment. Fresh assignments get a week of covered
+  calls before the AI's stop applies (MRK and MET were stopped out the day they were assigned). Kyle buys back at 80%
+  captured (section 7), as with NVDA and OUST. Section 7 now says shares bought before the rules are outside the stop
+  and the downtrend sale. Section 1 records Kyle's goal of 1% of account value a week. Adopted
+  without a backtest, on Kyle's call.
 
 - **2026.11.16.1:** section 10, the AI's playbook for the paper race: every eligible candidate, 1.1x after Monday
   and up to 1.3x after Wednesday, 15% per ticker, 0.8 of an expected move on top-scored names in Leading groups, a

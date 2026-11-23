@@ -79,6 +79,7 @@ export const KINDRED: Ruleset = {
     takeProfit: 0.5,
     coveredCall: { use: true, moves: 1, minWeekly: 0.002 },
     stopBelowFloor: true,
+    stopGraceDays: 0, // added with live rules 2026.11.22; 0 keeps Kindred's original same-day stop
   },
 };
 
