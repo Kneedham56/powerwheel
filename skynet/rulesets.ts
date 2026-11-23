@@ -62,7 +62,7 @@ export interface Levers {
 
 /** Apply `a.b.c=value` overrides to a deep copy of a ruleset. Numbers and true/false are parsed. */
 export function withOverrides(rs: Ruleset, sets: string[], name?: string): Ruleset {
-  if (!sets.length) return rs;
+  if (!sets.length) return name ? { ...rs, name } : rs;
   const out = structuredClone(rs) as unknown as Record<string, unknown>;
   out.levers ??= {};
   for (const kv of sets) {
