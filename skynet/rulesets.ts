@@ -46,7 +46,9 @@ export interface Levers {
    * "roc": the furthest out-of-the-money strike (below the price) whose week's premium is at least rocTarget of the
    * strike. No expected-move or floor cap. Wednesday redeploys keep the expected-move strike.
    */
-  putStrike?: "expectedMove" | "roc";
+  putStrike?: "expectedMove" | "roc" | "delta";
+  /** putStrike "delta": the highest strike under the price whose |delta| is at most this, paying minWeekly+ */
+  deltaTarget?: number;
   /** weekly premium ÷ strike for putStrike "roc", e.g. 0.01 */
   rocTarget?: number;
   /** Never sell assigned shares at a loss: no floor stop, no downtrend sale. They leave only by being called away. */
@@ -58,6 +60,18 @@ export interface Levers {
   /** Puts only on names whose 30-day ATM IV is at least / at most this (0.5 = 50%). A name with no IV is skipped. */
   ivMin?: number;
   ivMax?: number;
+  /** Skip candidates scoring under this. */
+  minScore?: number;
+  /** Stop out shares at this loss from cost (0.2 = 20%) instead of the floor stop. holdUntilGreen still wins. */
+  shareStop?: number;
+  /** false: no new puts on Wednesday (take profit and stops still run). */
+  wedRedeploy?: boolean;
+  /** Risk-off when SPY's last close is under its N-day average. */
+  spyMaDays?: number;
+  /** Risk-off when VIX closed above this. */
+  vixMax?: number;
+  /** Risk-off multiplies the day's exposure target by this (default 0: no new puts). */
+  riskOffScale?: number;
 }
 
 /** Apply `a.b.c=value` overrides to a deep copy of a ruleset. Numbers and true/false are parsed. */
@@ -88,7 +102,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred"];
+export const USED_NAMES = ["Kindred", "Nasus"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {

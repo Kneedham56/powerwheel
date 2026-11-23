@@ -46,6 +46,33 @@ export interface EngineOptions {
   maxLeverage: number;
 }
 
+/** The market as of the last close before a run (Skynet levers read it; the race doesn't). */
+export interface Regime {
+  /** SPY closes, oldest first, through the last close before the run */
+  spy: number[];
+  vix: number | null;
+}
+
+/** Share of the exposure target new puts may use: 1, or `riskOffScale` when a regime lever says risk-off. */
+export function regimeScale(rs: Ruleset, g?: Regime): number {
+  const lv = rs.levers;
+  if (!lv || !g) return 1;
+  let off = false;
+  if (lv.spyMaDays && g.spy.length >= lv.spyMaDays) {
+    const ma = g.spy.slice(-lv.spyMaDays).reduce((a, b) => a + b, 0) / lv.spyMaDays;
+    if (g.spy.at(-1)! < ma) off = true;
+  }
+  if (lv.vixMax !== undefined && g.vix !== null && g.vix > lv.vixMax) off = true;
+  return off ? (lv.riskOffScale ?? 0) : 1;
+}
+
+/** Shares are stopped out: the floor stop (Kindred), or a loss of `levers.shareStop` from cost; never with holdUntilGreen. */
+function stopHit(rs: Ruleset, l: Lot, close: number | undefined, floor: number | null) {
+  if (close === undefined) return false;
+  if (rs.levers?.shareStop !== undefined) return close < l.cost * (1 - rs.levers.shareStop);
+  return floor !== null && close < floor;
+}
+
 const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const pct = (n: number, d = 2) => `${(n * 100).toFixed(d)}%`;
 
@@ -100,6 +127,9 @@ class Ledger {
   }
 }
 
+const stopWhy = (rs: Ruleset, l: Lot, close: number, floor: number | null) =>
+  rs.levers?.shareStop !== undefined ? `Closed at ${r2(close)}, ${pct(1 - close / l.cost, 1)} under the ${r2(l.cost)} cost` : `Closed at ${r2(close)}, below its floor of ${r2(floor!)}`;
+
 function stopFloor(rs: Ruleset, bars: Bar[] | undefined) {
   if (!bars || bars.length < 22) return null;
   return techAt(rs.rules, bars, bars.length - 1)?.floor ?? null;
@@ -115,12 +145,14 @@ export function aiTarget(rs: Ruleset, c: CandidateRow) {
 function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands: CandidateRow[], quotes: QuoteBook, spots: Record<string, number>, date: string, expiry: string, exposureTarget: number, day: "monday" | "wednesday") {
   const A = rs.ai;
   const roc = day === "monday" && rs.levers?.putStrike === "roc" ? (rs.levers.rocTarget ?? 0.01) : null;
+  const delta = day === "monday" && rs.levers?.putStrike === "delta" ? (rs.levers.deltaTarget ?? 0.2) : null;
   const v = accountValue(s, spots);
   const held = new Set(s.options.filter((x) => x.type === "put").map((x) => x.symbol));
   for (const [i, c] of rankedCandidates(cands).entries()) {
     const tag = `#${i + 1} ${c.stage.toLowerCase()}, score ${c.score}`;
     if (held.has(c.symbol)) continue;
     const lv = rs.levers;
+    if (lv?.minScore !== undefined && (c.score ?? 0) < lv.minScore) continue;
     if ((lv?.ivMin !== undefined && (c.iv ?? -1) < lv.ivMin) || (lv?.ivMax !== undefined && (c.iv === null || c.iv > lv.ivMax))) continue;
     const book = quotes[c.symbol];
     if (book === undefined) continue;
@@ -132,7 +164,11 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
     const px0 = spots[c.symbol] ?? c.last;
     const target = roc === null ? aiTarget(rs, c) : px0;
     const ok =
-      roc === null
+      delta !== null
+        ? book
+            .filter((q) => q.expiry <= expiry && q.strike < px0 && q.delta !== null && Math.abs(q.delta) <= delta && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
+            .sort((a, b) => b.strike - a.strike)
+        : roc === null
         ? book
             .filter((q) => q.expiry <= expiry && q.strike <= target + 1e-9 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
             .sort((a, b) => b.strike - a.strike)
@@ -220,7 +256,7 @@ function sellLot(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, l: Lot,
   L.add("Sold shares", { symbol: l.symbol, type: "shares", qty: l.shares, price: r2(price), cash: price * l.shares, position_id: l.id, note: `${why}. ${pnl >= 0 ? "+" : "-"}${usd(Math.abs(pnl))} vs the ${r2(l.cost)} cost` });
 }
 
-export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput): RunResult {
+export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
@@ -239,14 +275,14 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   }
   if (rs.ai.coveredCall.use) sellCalls(rs, o, s, L, inp.quotes.calls, minStrike, inp.date, inp.expiry);
   const value = accountValue(s, inp.spots);
-  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday, "monday");
+  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday * regimeScale(rs, g), "monday");
 
   s.current = { week: s.week, opened: inp.date, expiry: inp.expiry, valueAtOpen: r2(value) };
   s.lastRun = { kind: "monday", at: inp.date, week: s.week };
   return { state: s, trades: L.trades, report: [] };
 }
 
-export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: WednesdayInput): RunResult {
+export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: WednesdayInput, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   if (!s.current) throw new Error(`wednesday ${inp.date}: no week is open`);
   const L = new Ledger(s, inp.date, rs.name);
@@ -289,11 +325,11 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
       const bars = inp.bars[l.symbol];
       const floor = stopFloor(rs, bars);
       const close = bars?.at(-1)?.close;
-      if (floor !== null && close !== undefined && close < floor) sellLot(rs, o, s, L, l, inp.spots[l.symbol] ?? close, `Closed at ${r2(close)}, below its floor of ${r2(floor)}`, inp.quotes.calls);
+      if (stopHit(rs, l, close, floor)) sellLot(rs, o, s, L, l, inp.spots[l.symbol] ?? close!, stopWhy(rs, l, close!, floor), inp.quotes.calls);
     }
   }
 
-  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday, "wednesday");
+  if (rs.levers?.wedRedeploy !== false) sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday * regimeScale(rs, g), "wednesday");
   s.lastRun = { kind: "wednesday", at: inp.date, week: s.week };
   return { state: s, trades: L.trades, report: [] };
 }
@@ -362,7 +398,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
       if (inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const floor = stopFloor(rs, inp.bars[l.symbol]);
       const close = inp.closes[l.symbol];
-      if (floor !== null && close !== undefined && close < floor) sellLot(rs, o, s, L, l, close, `Closed at ${r2(close)}, below its floor of ${r2(floor)}`);
+      if (stopHit(rs, l, close, floor)) sellLot(rs, o, s, L, l, close!, stopWhy(rs, l, close!, floor));
     }
   }
 
