@@ -84,6 +84,27 @@ export interface Levers {
   core?: number;
   /** the core holding's symbol (default SPY) */
   coreSymbol?: string;
+  /** Changes to the Sunday report (skynet/logic.ts buildCandidates). Missing = the live prep. */
+  prep?: PrepLevers;
+}
+
+/**
+ * Sunday-report levers. Features (logic.ts prepFeatures): ret6m, ret12m (returns), rv20, rv60 (realized vol), ivrv
+ * (30-day IV ÷ 20-day realized), iv, ivRank, offHigh (vs the 52-week high, ≤ 0), worst60 (worst 5-day return in 60
+ * days), toFloor (price ÷ floor − 1), rsi, pctB, vs50, vs200, rs4, rs13, weekly (the put's premium ÷ strike), otm
+ * (1 − strike ÷ price), price, term (front-week ATM IV ÷ the next expiry's: 1.2+ usually means earnings that week).
+ */
+export interface PrepLevers {
+  /** a candidate is eligible only when each feature is within [min, max] (null = no bound; a missing feature fails) */
+  filters?: Record<string, [number | null, number | null]>;
+  /** extra score points: 0 at `from`, `points` at `to`, linear and clamped (from > to works too) */
+  bonus?: Record<string, [number, number, number]>;
+  /** score cap; default 100 (bonuses can push past it when raised) */
+  maxScore?: number;
+  /** Kindred's eligibility skips funds outside Leading/Improving groups; false lets every fund in on its own trend */
+  fundGate?: boolean;
+  /** allow "Turning up" names (pref 3) into the eligible list; false removes them */
+  turningUp?: boolean;
 }
 
 /** Apply `a.b.c=value` overrides to a deep copy of a ruleset. Numbers and true/false are parsed. */
@@ -98,14 +119,15 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
     let o = out;
     for (const k of keys.slice(0, -1)) {
       if (o[k] === undefined) {
-        if (k !== "levers") throw new Error(`--set ${path}: no field "${k}"`);
+        if (keys[0] !== "levers") throw new Error(`--set ${path}: no field "${k}"`);
         o[k] = {};
       }
       o = o[k] as Record<string, unknown>;
     }
     const last = keys.at(-1)!;
     if (keys[0] !== "levers" && !(last in o)) throw new Error(`--set ${path}: no field "${last}" (new knobs go under levers.)`);
-    o[last] = raw === "true" ? true : raw === "false" ? false : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
+    o[last] =
+      raw === "true" ? true : raw === "false" ? false : raw.startsWith("[") || raw.startsWith("{") ? JSON.parse(raw) : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
   }
   out.parent = rs.name;
   out.name = name ?? `${rs.name} · ${sets.join(" · ")}`;
@@ -114,7 +136,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {
@@ -183,7 +205,30 @@ export const NASUS: Ruleset = {
   levers: { ccCoverage: 0.25, spyMaDays: 175 },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS };
+/**
+ * Azir: Nasus's trading with a reworked Sunday report (Claude's second solo round, 2026-11-23). The pick study showed
+ * the Kindred score barely beats a random order. Azir drops the trend-stage ranking (every qualifying stage scores 20),
+ * weights premium more (30 instead of 20), and adds up to 10 points each for momentum (distance above the 200-day,
+ * 13-week strength against SPY) and rich options (30-day IV over 20-day realized vol). Scores can pass 100.
+ * Everything Monday to Friday is Nasus.
+ */
+export const AZIR: Ruleset = {
+  ...NASUS,
+  name: "Azir",
+  parent: "Nasus",
+  created: "2026-11-23",
+  note: "Nasus + Sunday report: flat trend score, premium weight 30, bonuses for vs200, 13-week relative strength and IV ÷ realized vol.",
+  rules: {
+    ...KINDRED.rules,
+    score: { ...KINDRED.rules.score, trend: { "Leader pulling back": 20, Leader: 20, "Turning up": 20 }, premiumMax: 30 },
+  },
+  levers: {
+    ...NASUS.levers,
+    prep: { bonus: { vs200: [0, 0.5, 10], rs13: [0, 0.3, 10], ivrv: [1, 1.6, 10] }, maxScore: 200 },
+  },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];

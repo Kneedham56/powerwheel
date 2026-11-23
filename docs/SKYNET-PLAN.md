@@ -160,6 +160,7 @@ Its top section always holds **current state**, **open questions** and **next up
 
 **Picking names**
 - Minimum score (built, `levers.minScore`). Trend filter and never-sell zone on/off. Code.
+- The Sunday report's score and eligibility. Built (`levers.prep`: per-feature bonuses and filters, score cap, fund gate, Turning-up names; the live weights are `rules.score.*`). Test a ranking idea in the pick study (`npm run skynet -- picks`) before a backtest.
 - Universe:
   - ETFs only
   - single stocks only
@@ -183,7 +184,7 @@ Its top section always holds **current state**, **open questions** and **next up
 - Holiday-Monday weeks sell 2-week options because of `minExpiryDays: 4`.
 
 **Data we don't have:**
-- Earnings dates: earnings weeks can't be skipped or half-sized yet.
+- Earnings dates: there's no calendar, but the front-week IV ÷ next-week IV (`term` in `levers.prep.filters`) finds earnings weeks (built). In the backtest, skipping them costs about 3% a year.
 - Market cap: dollar volume stands in for it.
 - Point-in-time S&P membership.
 
@@ -194,6 +195,7 @@ Each is worth a small data task before the levers that need it.
 A thousand runs means the best one is partly luck. To keep the search honest:
 - **Search on train** (2018–2023). **Confirm on validate** (2024–2025). **2026 is the final exam**: it runs only when Kyle says.
 - **Year by year beats the total.** A change has to help most years, not just one big year. Watch 2018 Q4, 2020, 2022 and April 2025.
+- **Ranking changes need many universes.** A change to the Sunday report reshuffles which speculative names get assigned, and one name can decide a year. Judge it on the full universe plus random 80% slices of it (10 or more), and against a placebo (a bonus on a feature with no signal, like RSI). Nasus's own 2023 loses to every reshuffle, placebos included.
 - **Plateaus over spikes.** A setting counts only if its neighbours do well too (roc 1% wins, and 0.8% and 1.2% are close).
 - **Scoring:** CAGR, max drawdown and the worst year count together, not CAGR alone. The default target is the best CAGR with max drawdown no worse than SPY's.
 - Finalists have to survive the robustness levers above.
