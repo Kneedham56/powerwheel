@@ -69,6 +69,7 @@ interface SundayIn {
   meta: Record<string, CandidateMeta>;
   stocks: string[];
   quotes: Record<string, OptionQuote[]>;
+  vix: number[];
 }
 
 interface Impl {
@@ -82,7 +83,7 @@ interface Impl {
 function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
   return {
     label: rs.name,
-    candidates: (inp) => buildCandidates(rs.rules, { runDate: inp.runDate, bars: inp.bars, meta: inp.meta, watchlist: [], scanSymbols: inp.stocks, quotes: inp.quotes }, rs.levers?.prep),
+    candidates: (inp) => buildCandidates(rs.rules, { runDate: inp.runDate, bars: inp.bars, meta: inp.meta, watchlist: [], scanSymbols: inp.stocks, quotes: inp.quotes, vix: inp.vix }, rs.levers?.prep),
     monday: (s, inp, g) => monday(rs, eo, s, inp, g),
     wednesday: (s, inp, g) => wednesday(rs, eo, s, inp, g),
     friday: (s, inp) => friday(rs, eo, s, inp),
@@ -234,7 +235,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       const expiry = targetExpiry(r.rs.rules, runDate);
       const quotes: Record<string, OptionQuote[]> = {};
       for (const s of tradable) if (feed.chain(s, prev.last).length) quotes[s] = feed.book(s, prev.last, "put", expiry);
-      reports.set(r.key, r.impl.candidates({ runDate, bars: sundayBars, meta, stocks, quotes }).candidates.filter((c) => tradable.includes(c.symbol)));
+      reports.set(r.key, r.impl.candidates({ runDate, bars: sundayBars, meta, stocks, quotes, vix: feed.vixUpTo(prev.last) }).candidates.filter((c) => tradable.includes(c.symbol)));
     }
 
     const putBooks = new Map<string, QuoteBook>();

@@ -123,6 +123,21 @@ export class Feed {
     this.refDates = [...new Set([...this.vix.keys(), ...this.tbill.keys()])].sort();
   }
 
+  private vixDates: string[] | null = null;
+  /** VIX closes on or before `date`, oldest first, the last `n` of them. */
+  vixUpTo(date: string, n = 60): number[] {
+    this.vixDates ??= [...this.vix.keys()];
+    const d = this.vixDates;
+    let lo = 0;
+    let hi = d.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (d[mid] <= date) lo = mid + 1;
+      else hi = mid;
+    }
+    return d.slice(Math.max(0, lo - n), lo).map((x) => this.vix.get(x)!);
+  }
+
   /** The latest value on or before `date`. */
   asOf(series: Map<string, number>, date: string): number | null {
     let lo = 0;

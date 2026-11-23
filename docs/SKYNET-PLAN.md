@@ -161,6 +161,7 @@ Its top section always holds **current state**, **open questions** and **next up
 **Picking names**
 - Minimum score (built, `levers.minScore`). Trend filter and never-sell zone on/off. Code.
 - The Sunday report's score and eligibility. Built (`levers.prep`: per-feature bonuses and filters, score cap, fund gate, Turning-up names; the live weights are `rules.score.*`). Test a ranking idea in the pick study (`npm run skynet -- picks`) before a backtest.
+- An adaptive Sunday report that reads the regime each week. Built (`levers.prep.adapt`): a second ("alt") score, and a rule that blends the two rankings, switches between them on a regime feature (the momentum spread, a momentum-crash setup, VIX, breadth, dispersion, SPY's trend), or trims the list in a chosen regime. Every feature reads bars through Friday only. `npm run skynet -- regime` writes each Sunday's features so switch rules can be tried in the pick study first, against a coin-flip placebo switch (`coin`).
 - Universe:
   - ETFs only
   - single stocks only

@@ -145,6 +145,13 @@ function stopFloor(rs: Ruleset, bars: Bar[] | undefined) {
   return techAt(rs.rules, bars, bars.length - 1)?.floor ?? null;
 }
 
+/** The eligible candidates in trading order. The adaptive report (levers.prep.adapt) has already set the order (a blend
+ * interleaves two rankings), so it's kept; otherwise the race's ranking (by score). They agree when there's no blend. */
+export function ranked(rs: Ruleset, cands: CandidateRow[]) {
+  if (!rs.levers?.prep?.adapt) return rankedCandidates(cands);
+  return cands.filter((c) => c.eligible && c.score !== null && c.target_strike !== null);
+}
+
 export function aiTarget(rs: Ruleset, c: CandidateRow) {
   const base = c.target_strike!;
   if (c.exp_move === null || (c.score ?? 0) < rs.ai.strike.aggressiveMinScore || c.group_quadrant !== "Leading") return base;
@@ -158,7 +165,7 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
   const delta = day === "monday" && rs.levers?.putStrike === "delta" ? (rs.levers.deltaTarget ?? 0.2) : null;
   const v = accountValue(s, spots);
   const held = new Set(s.options.filter((x) => x.type === "put").map((x) => x.symbol));
-  for (const [i, c] of rankedCandidates(cands).entries()) {
+  for (const [i, c] of ranked(rs, cands).entries()) {
     const tag = `#${i + 1} ${c.stage.toLowerCase()}, score ${c.score}`;
     if (held.has(c.symbol)) continue;
     const lv = rs.levers;
