@@ -29,7 +29,7 @@ import {
   type Stage,
   type Tech,
 } from "../src/lib/rules";
-import type { Rules } from "./rulesets";
+import type { PrepLevers, Rules } from "./rulesets";
 
 // ---------------------------------------------------------------------------
 // indicators (rules.ts techAt)
@@ -251,6 +251,8 @@ export interface CandidateMeta {
   weeklies?: boolean;
   earnings?: { date: string; timing: string | null } | null;
   optionsVolume?: number | null;
+  /** Skynet only: front-week ATM IV ÷ the next expiry's (feed.termRatio), the earnings stand-in */
+  termRatio?: number | null;
 }
 
 export interface CandidateInputs {
@@ -268,7 +270,43 @@ export interface RotationRow {
   quadrant: Quadrant;
 }
 
-export function buildCandidates(R: Rules, inp: CandidateInputs): { expiry: string; rotation: RotationRow[]; candidates: CandidateRow[] } {
+/** Features the prep levers read (rulesets.ts PrepLevers). Missing inputs leave a feature out. */
+export function prepFeatures(t: Tech, bars: Bar[], m: CandidateMeta, put: OptionQuote | null, rs4: number | null, rs13: number | null, from: string): Record<string, number> {
+  const c = bars.map((b) => b.close);
+  const f: Record<string, number | null> = {
+    ret6m: c.length > 126 ? c.at(-1)! / c[c.length - 127] - 1 : null,
+    ret12m: c.length > 252 ? c.at(-1)! / c[c.length - 253] - 1 : null,
+    rv20: t.realizedVol,
+    rv60: null,
+    ivrv: m.iv && t.realizedVol ? m.iv / t.realizedVol : null,
+    iv: m.iv ?? null,
+    ivRank: m.ivRank ?? null,
+    offHigh: t.offHigh,
+    worst60: null,
+    toFloor: t.floor ? t.last / t.floor - 1 : null,
+    rsi: t.rsi14,
+    pctB: t.pctB,
+    vs50: t.vs50,
+    vs200: t.vs200,
+    rs4,
+    rs13,
+    weekly: put ? weeklyPremium(put, from) : null,
+    otm: put ? 1 - put.strike / t.last : null,
+    price: t.last,
+    term: m.termRatio ?? null,
+  };
+  if (c.length > 61) {
+    const lr = c.slice(-61).slice(1).map((x, i) => Math.log(x / c[c.length - 61 + i]));
+    const mu = mean(lr);
+    f.rv60 = Math.sqrt(mean(lr.map((x) => (x - mu) ** 2))) * Math.sqrt(252);
+    let w = 0;
+    for (let i = c.length - 60; i < c.length; i++) w = Math.min(w, c[i] / c[i - 5] - 1);
+    f.worst60 = w;
+  }
+  return Object.fromEntries(Object.entries(f).filter(([, v]) => v !== null && Number.isFinite(v))) as Record<string, number>;
+}
+
+export function buildCandidates(R: Rules, inp: CandidateInputs, P?: PrepLevers): { expiry: string; rotation: RotationRow[]; candidates: CandidateRow[] } {
   const { bars, meta } = inp;
   if (!bars.SPY?.length) throw new Error(`No SPY bars before ${inp.runDate}.`);
   const spy = techAt(R, bars.SPY)!;
@@ -319,15 +357,37 @@ export function buildCandidates(R: Rules, inp: CandidateInputs): { expiry: strin
     if (qs.length && !chosen) flags.push("No real market");
     if (chosen && chosen.expiry !== expiry) flags.push("No weekly that Friday");
     if (!bigEnough && call.pref <= 3) flags.push("Under $20B: watch only");
-    const fundOut = !!fund && groupQ !== "Leading" && groupQ !== "Improving";
+    const fundOut = !!fund && groupQ !== "Leading" && groupQ !== "Improving" && P?.fundGate !== false;
     if (fundOut && call.pref <= 3) flags.push(`Fund is ${groupQ ?? "unranked"}: no new puts`);
 
-    const eligible = call.pref <= 3 && bigEnough && !fundOut && !(qs.length && !chosen) && !(chosen && chosen.expiry !== expiry);
+    let eligible = call.pref <= 3 && bigEnough && !fundOut && !(qs.length && !chosen) && !(chosen && chosen.expiry !== expiry);
+    const feat = P ? prepFeatures(t, bars[symbol], m, chosen, rs4, rs13, inp.runDate) : null;
+    if (P && eligible) {
+      if (P.turningUp === false && call.pref === 3) eligible = false;
+      for (const [k, [lo, hi]] of Object.entries(P.filters ?? {})) {
+        const v = feat![k];
+        if (v === undefined || (lo !== null && v < lo) || (hi !== null && v > hi)) {
+          eligible = false;
+          flags.push(`Prep filter: ${k}`);
+          break;
+        }
+      }
+    }
     let liquidity: number | null = null;
     if (chosen) liquidity = (chosen.ask! - chosen.bid!) / midOf(chosen)! <= 0.1 ? 1 : 0.6;
     else if (m.optionsVolume) liquidity = m.optionsVolume >= 50000 ? 0.9 : m.optionsVolume >= 10000 ? 0.7 : m.optionsVolume >= 2000 ? 0.5 : 0.3;
     const sc = call.pref <= 3 ? score(R, { stage: st, tech: t, groupQuadrant: groupQ, premiumWeekly: prem, ivRank: m.ivRank ?? null, liquidity }) : null;
     if (sc?.checkWhy) flags.push("Check why: over 2% a week");
+    if (sc && P) {
+      let extra = 0;
+      for (const [k, [a, b, pts]] of Object.entries(P.bonus ?? {})) {
+        const v = feat![k];
+        if (v === undefined || a === b) continue;
+        extra += pts * Math.max(0, Math.min(1, (v - a) / (b - a)));
+      }
+      const raw = sc.parts.trend + sc.parts.rotation + sc.parts.location + sc.parts.premium + sc.parts.liquidity - sc.parts.penalty + extra;
+      sc.total = Math.max(0, Math.min(P.maxScore ?? 100, Math.round(raw)));
+    }
 
     if (source === "Scan" && !eligible) continue;
     if (source === "Fund" && (call.pref > 3 || fundOut)) continue;

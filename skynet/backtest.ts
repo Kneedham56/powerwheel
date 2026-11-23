@@ -82,7 +82,7 @@ interface Impl {
 function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
   return {
     label: rs.name,
-    candidates: (inp) => buildCandidates(rs.rules, { runDate: inp.runDate, bars: inp.bars, meta: inp.meta, watchlist: [], scanSymbols: inp.stocks, quotes: inp.quotes }),
+    candidates: (inp) => buildCandidates(rs.rules, { runDate: inp.runDate, bars: inp.bars, meta: inp.meta, watchlist: [], scanSymbols: inp.stocks, quotes: inp.quotes }, rs.levers?.prep),
     monday: (s, inp, g) => monday(rs, eo, s, inp, g),
     wednesday: (s, inp, g) => wednesday(rs, eo, s, inp, g),
     friday: (s, inp) => friday(rs, eo, s, inp),
@@ -150,7 +150,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
   const rr: Run[] = runs.map(({ impl, rs }) => ({
     impl,
     rs,
-    key: `${impl.label === "src/lib" ? "live" : "skynet"}:${JSON.stringify(rs.rules)}`,
+    key: `${impl.label === "src/lib" ? "live" : "skynet"}:${JSON.stringify(rs.rules)}:${JSON.stringify(rs.levers?.prep ?? null)}`,
     state: newState(o.capital, weeks[first].entry, o.capital),
     trades: [],
     rows: [],
@@ -226,7 +226,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       const ch = feed.chain(s, prev.last);
       const exps = new Set(ch.map((c) => c.expiry).filter((e) => e > prev.last));
       const dv = feed.dollarVolume(s, w.entry);
-      meta[s] = { sector: sectors[s], bigEnough: !!FUNDS[s] || (dv !== null && dv >= o.minDollarVolume), ...feed.ivOn(s, prev.last), weeklies: exps.size >= 2 };
+      meta[s] = { sector: sectors[s], bigEnough: !!FUNDS[s] || (dv !== null && dv >= o.minDollarVolume), ...feed.ivOn(s, prev.last), weeklies: exps.size >= 2, termRatio: feed.termRatio(s, prev.last) };
     }
     const reports = new Map<string, CandidateRow[]>();
     for (const r of rr) {
@@ -404,14 +404,14 @@ function csv<T extends object>(rows: T[]): string {
 // ---------------------------------------------------------------------------
 
 const argv = process.argv.slice(3);
-const opt = (name: string, dflt?: string) => {
+export const opt = (name: string, dflt?: string) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : dflt;
 };
 const flag = (name: string) => argv.includes(`--${name}`);
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 
-async function setup(defaultFrom: string, defaultTo: string): Promise<{ feed: Feed; o: SimOptions }> {
+export async function setup(defaultFrom: string, defaultTo: string): Promise<{ feed: Feed; o: SimOptions }> {
   const from = opt("from", defaultFrom)!;
   const to = opt("to", defaultTo)!;
   if (!isDate(from) || !isDate(to) || from > to) throw new Error(`bad --from/--to: ${from} ${to}`);

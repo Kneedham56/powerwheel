@@ -15,6 +15,7 @@ npm run skynet -- backtest --ruleset kindred [--from 2018-01-01] [--to 2025-12-3
 npm run skynet -- backtest --ruleset kindred --set ai.takeProfit=0.3 [--name "Kindred · TP 30%"]   # a one-off variant
 npm run skynet -- parity [--from 2024-01-01] [--to 2024-06-30]     # Skynet's code vs src/lib, same answers?
 npm run skynet -- sectors                                         # data/sectors.json from the prep reports
+npm run skynet -- picks --ruleset nasus [--set ...]               # pick study: every Sunday candidate and its put's outcome
 ```
 
 - The backtest reads Parquet through an in-memory DuckDB, so it runs while a pull holds `data/skynet.duckdb`.
@@ -46,6 +47,8 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - Names are random League of Legends champions and are never reused. Add every name to `USED_NAMES`.
 - Sweep variants hang under a parent (`parent: "Kindred"`) and are named like "Kindred · delta 0.22".
 - **Kindred** is the first ruleset: the live rules and the race's AI playbook as of `RULES_VERSION` 2026.11.16.1, unchanged.
+- **Nasus** is Kindred plus three changes: no new puts while SPY is under its 175-day average, covered calls on 25% of each lot, and take profit at 70%.
+- **Azir** is Nasus with a reworked Sunday report. Every qualifying trend stage scores 20, premium weighs 30, and there are up to 10 bonus points each for distance above the 200-day, 13-week strength against SPY, and IV ÷ realized vol.
 
 ## Variants and levers
 
@@ -71,6 +74,29 @@ Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rules
 | `levers.riskOffScale=0.5` | When risk-off, the day's put exposure target is multiplied by this (default 0: no new puts). |
 | `levers.riskOffExit=all` / `losers` | Monday when risk-off: sell every share lot, or only those under cost. |
 | `levers.core=1` (+ `levers.coreSymbol=QQQ`) | Core holding: after Monday's puts, buy SPY (or QQQ) until total exposure is this multiple of the account; all of it is sold when risk-off. Puts come first: the core doesn't count toward their target, only toward the 2x margin cap. It's never covered or stopped. |
+
+### Sunday-report levers
+
+`levers.prep` changes the Sunday report itself (`buildCandidates` in `skynet/logic.ts`). The live prep's score weights are already in the ruleset (`rules.score.*`, e.g. `rules.score.premiumMax=30`). `levers.prep` adds what the live prep doesn't have. JSON values are parsed, so they go in a job file or a single `--set`:
+
+| Lever | What it does |
+|---|---|
+| `levers.prep.bonus={"vs200":[0,0.5,10]}` | Extra score points per feature: 0 at the first number, the third number of points at the second, linear and clamped in between. |
+| `levers.prep.filters={"term":[null,1.15]}` | A candidate is eligible only with each feature inside [min, max] (`null` = no bound). A missing feature fails. |
+| `levers.prep.maxScore=200` | The score cap (default 100). Raise it with bonuses so the top names don't tie at 100. |
+| `levers.prep.fundGate=false` | Let funds outside Leading/Improving groups in on their own trend. |
+| `levers.prep.turningUp=false` | Drop "Turning up" names from the eligible list. |
+
+The features are listed on `PrepLevers` in `skynet/rulesets.ts`: returns, realized vol, IV ÷ realized vol, IV rank, distance from the high, floor and averages, %B, RSI, the put's premium and distance, and `term`. `term` is the front week's at-the-money IV ÷ the next expiry's (`feed.termRatio`). An earnings report before the front expiry pushes it to about 1.2, so `term ≤ 1.15` stands in for prep's earnings rule. In 2023 it caught every earnings week of AAPL, NFLX, NVDA and JPM, with no false alarms. The report cache is keyed by `rules` and `levers.prep`.
+
+### Pick study
+
+`npm run skynet -- picks --ruleset nasus` writes `data/skynet/picks-<ruleset>.jsonl`. It has one row per eligible candidate per Sunday:
+- the report's fields and extra bar features
+- the put the engine would sell on Monday (strike, fill, delta, spread)
+- what happened: the expiry close, assignment, and the stock 4 and 13 weeks later (`put_pnl`, `wheel4`, `wheel13`, per dollar of strike)
+
+Re-ranking each week's candidates offline and comparing the top 8 tests a scoring idea without a backtest's path noise. A single backtest of a ranking change is mostly noise: one or two speculative names decide the year. Check a ranking change in the pick study first. Then backtest it on the full universe and on random 80% slices (`--symbols`), and pool the results.
 
 ### Sweeps
 
@@ -132,7 +158,7 @@ The console prints the same year-by-year table next to **SPY buy and hold**, sta
 ## Known gaps
 
 These all make the backtest differ from live:
-- **No earnings dates.** The rule that skips a name with earnings before expiry can't fire. This flatters single stocks.
+- **No earnings dates.** The rule that skips a name with earnings before expiry can't fire, unless a ruleset uses the `term` filter (see Sunday-report levers) as a stand-in.
 - **No market caps.** The $20B test is replaced by 20-day average dollar volume of at least $100M (`--min-dollar-volume`). Funds always pass.
 - **Survivorship.** The symbol list is today's priority list: names Kyle trades now, or that prep has reported on. It picks names that did well.
 - **Sectors** come from `data/sectors.json` (`npm run skynet -- sectors`, the latest theme from the prep reports). A stock missing from it counts as theme "Other", with no sector-fund quadrant. That makes the 30% theme cap shared across every unknown stock.

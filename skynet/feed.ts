@@ -381,6 +381,29 @@ export class Feed {
     return this.chains.get(date)?.get(sym) ?? [];
   }
 
+  /**
+   * Front-week at-the-money IV ÷ the next expiry's, on `date` (null without two expiries). An earnings report before
+   * the front expiry packs its move into fewer days, so the ratio jumps (about 1.2+); the backtest has no earnings
+   * calendar, and this stands in for one.
+   */
+  termRatio(sym: string, date: string): number | null {
+    const ch = this.chain(sym, date);
+    const spot = this.spots.get(date)?.get(sym);
+    if (!ch.length || !spot) return null;
+    const exps = [...new Set(ch.map((c) => c.expiry).filter((e) => e > date))].sort();
+    if (exps.length < 2) return null;
+    const atm = (e: string) => {
+      const cs = ch.filter((c) => c.expiry === e && c.iv !== null && c.iv > 0);
+      if (!cs.length) return null;
+      const k = cs.reduce((a, b) => (Math.abs(b.strike - spot) < Math.abs(a.strike - spot) ? b : a)).strike;
+      const at = cs.filter((c) => c.strike === k);
+      return at.reduce((a, c) => a + c.iv!, 0) / at.length;
+    };
+    const f = atm(exps[0]);
+    const n = atm(exps[1]);
+    return f && n ? f / n : null;
+  }
+
   /** Contracts of one type expiring on `expiry`, as the race's quote book wants them. */
   book(sym: string, date: string, type: "put" | "call", expiry: string): OptionQuote[] {
     return this.chain(sym, date)
