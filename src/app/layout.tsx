@@ -26,6 +26,7 @@ const NAV = [
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const demo = isDemo();
+  const skynetOnly = process.env.SKYNET_ONLY === "true";
   const signedIn = await isValidSession((await cookies()).get(SESSION_COOKIE)?.value);
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
@@ -37,10 +38,10 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
         )}
         <header className="border-b border-border bg-surface">
           <nav className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
-            <Link href="/" className="mr-4 font-semibold tracking-tight">
-              PowerWheel
+            <Link href={skynetOnly ? "/skynet" : "/"} className="mr-4 font-semibold tracking-tight">
+              {skynetOnly ? "PowerWheel · Skynet" : "PowerWheel"}
             </Link>
-            {signedIn && NAV.filter((n) => !(demo && n.href === "/import")).map((n) => (
+            {signedIn && !skynetOnly && NAV.filter((n) => !(demo && n.href === "/import")).map((n) => (
               <Link key={n.href} href={n.href} className="text-sm text-muted hover:text-foreground">
                 {n.label}
               </Link>

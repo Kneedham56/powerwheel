@@ -1,7 +1,7 @@
 import "server-only";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { RunFile } from "../../skynet/results";
+import { summarize, type RunFile, type RunSummary } from "../../skynet/results";
 
 /**
  * Skynet backtest runs, read from data/backtests on this machine (gitignored, local only). A deployed copy of the app
@@ -66,4 +66,26 @@ export function loadRun(id: string, runs = listRuns()): { run: RunFile | null; e
   const run = hit.run;
   if ((run.format ?? 1) < 2 || !run.weeks) return { run: null, error: "This run predates the page (no weeks in run.json). Run the backtest again to see it here." };
   return { run };
+}
+
+/** Every run's headline numbers, newest first. Runs from before summary.json get one written on first sight. */
+export function listSummaries(runs = listRuns()): (RunSummary & { id: string })[] {
+  const out: (RunSummary & { id: string })[] = [];
+  for (const r of runs) {
+    const folder = join(dir(), r.ruleset, r.id.split("/")[1]);
+    const file = join(folder, "summary.json");
+    try {
+      let s: RunSummary;
+      const have = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as RunSummary) : null;
+      if (have && have.put_deploy !== undefined) s = have;
+      else {
+        s = summarize(JSON.parse(readFileSync(join(folder, "run.json"), "utf8")) as RunFile);
+        writeFileSync(file, JSON.stringify(s));
+      }
+      out.push({ ...s, id: r.id });
+    } catch {
+      // a run still being written, or a broken file: leave it out of the table
+    }
+  }
+  return out;
 }

@@ -11,7 +11,7 @@
  *    latest one on or before them.
  *  - ext_daily.parquet: VIX (Cboe) and the 3-month T-bill (FRED DTB3).
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
 import type { Bar, OptionQuote } from "../src/lib/rules";
@@ -20,6 +20,16 @@ export const DATA_DIR = join(process.cwd(), "data");
 export const PARQUET = join(DATA_DIR, "parquet");
 const P = (...parts: string[]) => join(PARQUET, ...parts).replace(/\\/g, "/");
 const sq = (s: string) => `'${s.replace(/'/g, "''")}'`;
+
+/**
+ * The backtest cache (data/cache, gitignored): per symbol, the slice of option_greeks_eod + option_oi that runs read
+ * (every core day's contracts within CACHE_MAX_DAYS, open interest already joined) and the 30-day IV on every week's
+ * last day. A run reads these small files instead of scanning the full Parquet store. Build it with
+ * `npm run skynet -- cache` after the data changes; `--no-cache` on a backtest reads the store directly.
+ */
+export const CACHE = join(DATA_DIR, "cache");
+const C = (...parts: string[]) => join(CACHE, ...parts).replace(/\\/g, "/");
+export const CACHE_MAX_DAYS = 15;
 
 export const addDays = (s: string, n: number) => {
   const d = new Date(`${s}T12:00:00Z`);
@@ -256,17 +266,22 @@ export class Feed {
    * Load chains for `symbols` on `days`: contracts expiring within `maxDays`, puts from half the stock price up to just
    * above it, calls from just below it up to 1.6×. Open interest is the latest pull on or before each day.
    */
-  async loadChains(symbols: string[], days: string[], maxDays: number) {
-    if (!days.length) return;
-    const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
-    const minDay = days.reduce((a, b) => (a < b ? a : b));
-    const maxDay = days.reduce((a, b) => (a > b ? a : b));
-    for (const s of symbols) {
-      if (!this.hasOptions(s)) continue;
-      const g = sq(P("option_greeks_eod", `${s}.parquet`));
-      const oiFile = P("option_oi", `${s}.parquet`);
-      const hasOi = existsSync(oiFile);
-      const sql = `
+  useCache = true;
+  private cached = (kind: "chains" | "iv", s: string) => this.useCache && existsSync(C(kind, `${s}.parquet`)) && (kind === "iv" || this.cacheMaxDays() >= 0);
+  private cacheMax: number | null = null;
+  private cacheMaxDays() {
+    if (this.cacheMax === null) {
+      const m = C("manifest.json");
+      this.cacheMax = existsSync(m) ? (JSON.parse(readFileSync(m, "utf8")) as { maxDays: number }).maxDays : -1;
+    }
+    return this.cacheMax;
+  }
+
+  /** The chain query over the full store (also what the cache is built from). Dates come back as DATE. */
+  private chainSql(s: string, dayList: string, minDay: string, maxDay: string, maxDays: number) {
+    const g = sq(P("option_greeks_eod", `${s}.parquet`));
+    const oiFile = P("option_oi", `${s}.parquet`);
+    return `
         WITH q AS (
           SELECT date, expiration, strike, "right", bid, ask, delta, implied_vol, underlying_price
           FROM read_parquet(${g})
@@ -275,18 +290,64 @@ export class Feed {
             AND (("right" = 'PUT' AND strike BETWEEN 0.5 * underlying_price AND 1.05 * underlying_price)
               OR ("right" = 'CALL' AND strike BETWEEN 0.95 * underlying_price AND 1.6 * underlying_price))
         )${
-          hasOi
+          existsSync(oiFile)
             ? `,
         oi AS (
           SELECT date, expiration, strike, "right", open_interest FROM read_parquet(${sq(oiFile)})
           WHERE date BETWEEN DATE ${sq(minDay)} - 10 AND DATE ${sq(maxDay)} AND expiration >= DATE ${sq(minDay)}
         )
-        SELECT strftime(q.date, '%Y-%m-%d') d, strftime(q.expiration, '%Y-%m-%d') e, q.strike, q."right", q.bid, q.ask, q.delta, q.implied_vol iv,
-               q.underlying_price u, oi.open_interest oi
+        SELECT q.date d, q.expiration e, q.strike, q."right", q.bid, q.ask, q.delta, q.implied_vol iv, q.underlying_price u, oi.open_interest oi
         FROM q ASOF LEFT JOIN oi ON q.expiration = oi.expiration AND q.strike = oi.strike AND q."right" = oi."right" AND q.date >= oi.date`
             : `
-        SELECT strftime(date, '%Y-%m-%d') d, strftime(expiration, '%Y-%m-%d') e, strike, "right", bid, ask, delta, implied_vol iv, underlying_price u, NULL oi FROM q`
+        SELECT date d, expiration e, strike, "right", bid, ask, delta, implied_vol iv, underlying_price u, NULL::BIGINT oi FROM q`
         }`;
+  }
+
+  private ivSql(s: string, dayList: string) {
+    return `
+        WITH x AS (
+          SELECT date, implied_vol,
+                 rank() OVER (PARTITION BY date ORDER BY abs(date_diff('day', date, expiration) - 30), expiration, abs(strike - underlying_price), strike) rk
+          FROM read_parquet(${sq(P("option_greeks_eod", `${s}.parquet`))})
+          WHERE date IN (${dayList}) AND expiration BETWEEN date + 7 AND date + 60 AND implied_vol > 0.01 AND implied_vol < 5 AND bid > 0
+        )
+        SELECT date d, avg(implied_vol) iv FROM x WHERE rk = 1 GROUP BY date`;
+  }
+
+  /**
+   * Build data/cache for `symbols`: chains on `days` (the core days: each week's Friday before, entry and middle day)
+   * and IV on `ivDays` (each week's last day). One pass over each symbol's store.
+   */
+  async buildCache(symbols: string[], days: string[], ivDays: string[], log: (s: string, i: number) => void = () => {}) {
+    mkdirSync(C("chains"), { recursive: true });
+    mkdirSync(C("iv"), { recursive: true });
+    const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
+    const ivList = ivDays.map((d) => `DATE ${sq(d)}`).join(", ");
+    const minDay = days.reduce((a, b) => (a < b ? a : b));
+    const maxDay = days.reduce((a, b) => (a > b ? a : b));
+    for (const [i, s] of symbols.entries()) {
+      if (!this.hasOptions(s)) continue;
+      await this.con.run(`COPY (${this.chainSql(s, dayList, minDay, maxDay, CACHE_MAX_DAYS)} ORDER BY d, e, strike) TO ${sq(C("chains", `${s}.parquet`))} (FORMAT parquet)`);
+      await this.con.run(`COPY (${this.ivSql(s, ivList)} ORDER BY d) TO ${sq(C("iv", `${s}.parquet`))} (FORMAT parquet)`);
+      log(s, i);
+    }
+    writeFileSync(C("manifest.json"), JSON.stringify({ built: new Date().toISOString(), maxDays: CACHE_MAX_DAYS, symbols: symbols.length, from: minDay, to: maxDay }, null, 1));
+    this.cacheMax = null;
+  }
+
+  async loadChains(symbols: string[], days: string[], maxDays: number) {
+    if (!days.length) return;
+    const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
+    const minDay = days.reduce((a, b) => (a < b ? a : b));
+    const maxDay = days.reduce((a, b) => (a > b ? a : b));
+    const fromCache = this.useCache && this.cacheMaxDays() >= maxDays;
+    for (const s of symbols) {
+      if (!this.hasOptions(s)) continue;
+      const inner =
+        fromCache && this.cached("chains", s)
+          ? `SELECT * FROM read_parquet(${sq(C("chains", `${s}.parquet`))}) WHERE d IN (${dayList}) AND e <= d + ${Math.round(maxDays)}`
+          : this.chainSql(s, dayList, minDay, maxDay, maxDays);
+      const sql = `SELECT strftime(d, '%Y-%m-%d') d, strftime(e, '%Y-%m-%d') e, strike, "right", bid, ask, delta, iv, u, oi FROM (${inner})`;
       const rows = await this.rows<{ d: string; e: string; strike: number; right: string; bid: number | null; ask: number | null; delta: number | null; iv: number | null; u: number; oi: number | string | null }>(sql);
       for (const r of rows) {
         let day = this.chains.get(r.d);
@@ -336,14 +397,8 @@ export class Feed {
     const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
     for (const s of symbols) {
       if (!this.hasOptions(s)) continue;
-      const rows = await this.rows<{ d: string; iv: number }>(`
-        WITH x AS (
-          SELECT date, implied_vol,
-                 rank() OVER (PARTITION BY date ORDER BY abs(date_diff('day', date, expiration) - 30), expiration, abs(strike - underlying_price), strike) rk
-          FROM read_parquet(${sq(P("option_greeks_eod", `${s}.parquet`))})
-          WHERE date IN (${dayList}) AND expiration BETWEEN date + 7 AND date + 60 AND implied_vol > 0.01 AND implied_vol < 5 AND bid > 0
-        )
-        SELECT strftime(date, '%Y-%m-%d') d, avg(implied_vol) iv FROM x WHERE rk = 1 GROUP BY date`);
+      const inner = this.cached("iv", s) ? `SELECT d, iv FROM read_parquet(${sq(C("iv", `${s}.parquet`))}) WHERE d IN (${dayList})` : this.ivSql(s, dayList);
+      const rows = await this.rows<{ d: string; iv: number }>(`SELECT strftime(d, '%Y-%m-%d') d, iv FROM (${inner})`);
       const m = this.ivs.get(s) ?? new Map<string, number>();
       for (const r of rows) m.set(r.d, Number(r.iv));
       this.ivs.set(s, m);

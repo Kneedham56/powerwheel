@@ -112,13 +112,16 @@ export function aiTarget(rs: Ruleset, c: CandidateRow) {
   return c.floor !== null && near <= c.floor ? base : Math.max(base, near);
 }
 
-function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands: CandidateRow[], quotes: QuoteBook, spots: Record<string, number>, date: string, expiry: string, exposureTarget: number) {
+function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands: CandidateRow[], quotes: QuoteBook, spots: Record<string, number>, date: string, expiry: string, exposureTarget: number, day: "monday" | "wednesday") {
   const A = rs.ai;
+  const roc = day === "monday" && rs.levers?.putStrike === "roc" ? (rs.levers.rocTarget ?? 0.01) : null;
   const v = accountValue(s, spots);
   const held = new Set(s.options.filter((x) => x.type === "put").map((x) => x.symbol));
   for (const [i, c] of rankedCandidates(cands).entries()) {
     const tag = `#${i + 1} ${c.stage.toLowerCase()}, score ${c.score}`;
     if (held.has(c.symbol)) continue;
+    const lv = rs.levers;
+    if ((lv?.ivMin !== undefined && (c.iv ?? -1) < lv.ivMin) || (lv?.ivMax !== undefined && (c.iv === null || c.iv > lv.ivMax))) continue;
     const book = quotes[c.symbol];
     if (book === undefined) continue;
     const base = { symbol: c.symbol, type: "put" as const, expiration: expiry };
@@ -126,13 +129,23 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
       L.add("Skipped", { ...base, note: `${tag}: no weekly expiring ${expiry}` });
       continue;
     }
-    const target = aiTarget(rs, c);
-    const ok = book
-      .filter((q) => q.expiry <= expiry && q.strike <= target + 1e-9 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
-      .sort((a, b) => b.strike - a.strike);
+    const px0 = spots[c.symbol] ?? c.last;
+    const target = roc === null ? aiTarget(rs, c) : px0;
+    const ok =
+      roc === null
+        ? book
+            .filter((q) => q.expiry <= expiry && q.strike <= target + 1e-9 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
+            .sort((a, b) => b.strike - a.strike)
+        : book
+            .filter((q) => q.expiry <= expiry && q.strike < px0 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= roc)
+            .sort((a, b) => a.strike - b.strike);
     const q = ok[0];
     if (!q) {
-      L.add("Skipped", { ...base, strike: r2(target), note: `${tag}: no strike at or under ${r2(target)} with a real market paying ${pct(A.minWeekly)}+ for the week` });
+      const note =
+        roc === null
+          ? `${tag}: no strike at or under ${r2(target)} with a real market paying ${pct(A.minWeekly)}+ for the week`
+          : `${tag}: no strike under the price (${r2(px0)}) with a real market paying ${pct(roc)}+ for the week`;
+      L.add("Skipped", { ...base, strike: r2(target), note });
       continue;
     }
     const k = q.strike;
@@ -172,7 +185,7 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
 function sellCalls(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, quotes: QuoteBook, minStrike: Record<string, number>, date: string, expiry: string) {
   const CC = rs.ai.coveredCall;
   for (const l of s.lots) {
-    const n = Math.floor(l.shares / 100);
+    const n = Math.floor(Math.floor(l.shares / 100) * (rs.levers?.ccCoverage ?? 1) + 1e-9);
     if (n < 1 || s.options.some((x) => x.type === "call" && x.symbol === l.symbol)) continue;
     const book = quotes[l.symbol];
     if (book === undefined) continue;
@@ -216,7 +229,7 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   for (const l of [...s.lots]) {
     const c = inp.candidates.find((x) => x.symbol === l.symbol);
     l.downtrendWeeks = c?.stage === "Downtrend" ? (l.downtrendWeeks ?? 0) + 1 : 0;
-    if (l.downtrendWeeks >= 2) sellLot(rs, o, s, L, l, l.mark, "Downtrend two Sundays in a row", inp.quotes.calls);
+    if (l.downtrendWeeks >= 2 && !rs.levers?.holdUntilGreen) sellLot(rs, o, s, L, l, l.mark, "Downtrend two Sundays in a row", inp.quotes.calls);
   }
 
   const minStrike: Record<string, number> = {};
@@ -226,7 +239,7 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   }
   if (rs.ai.coveredCall.use) sellCalls(rs, o, s, L, inp.quotes.calls, minStrike, inp.date, inp.expiry);
   const value = accountValue(s, inp.spots);
-  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday);
+  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday, "monday");
 
   s.current = { week: s.week, opened: inp.date, expiry: inp.expiry, valueAtOpen: r2(value) };
   s.lastRun = { kind: "monday", at: inp.date, week: s.week };
@@ -270,7 +283,7 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
     });
   }
 
-  if (rs.ai.stopBelowFloor) {
+  if (rs.ai.stopBelowFloor && !rs.levers?.holdUntilGreen) {
     for (const l of [...s.lots]) {
       if (inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const bars = inp.bars[l.symbol];
@@ -280,7 +293,7 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
     }
   }
 
-  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday);
+  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday, "wednesday");
   s.lastRun = { kind: "wednesday", at: inp.date, week: s.week };
   return { state: s, trades: L.trades, report: [] };
 }
@@ -303,7 +316,13 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
     s.options = s.options.filter((y) => y.id !== x.id);
     const base = { symbol: x.symbol, type: x.type, strike: x.strike, expiration: x.expiration, qty: x.contracts, price: c, position_id: x.id };
     if (x.type === "put") {
-      if (c < x.strike) {
+      if (c < x.strike && rs.levers?.avoidAssignment) {
+        const px = r2(x.strike - c + 0.05);
+        const cash = -px * 100 * x.contracts - o.fees * x.contracts;
+        s.cash += cash;
+        const kept = (x.price - px) * 100 * x.contracts;
+        L.add("Bought back", { ...base, price: px, cash, note: `Closed at ${r2(c)}, under the strike: bought back at ${px} instead of taking assignment; ${kept >= 0 ? "kept" : "lost"} ${usd(Math.abs(kept))}` });
+      } else if (c < x.strike) {
         const cash = -x.strike * 100 * x.contracts - o.fees * x.contracts;
         s.cash += cash;
         const id = L.id("l");
@@ -338,7 +357,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
     if (inp.closes[l.symbol] !== undefined) l.mark = inp.closes[l.symbol];
     else if (!missing.includes(l.symbol)) missing.push(l.symbol);
   }
-  if (rs.ai.stopBelowFloor && inp.bars) {
+  if (rs.ai.stopBelowFloor && !rs.levers?.holdUntilGreen && inp.bars) {
     for (const l of [...s.lots]) {
       if (inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const floor = stopFloor(rs, inp.bars[l.symbol]);
