@@ -249,7 +249,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
     const days = (Date.parse(w.last) - Date.parse(lastFriday)) / 864e5;
     const spy = feed.close("SPY", w.last)!;
     // the market as of the close before each run (no look-ahead)
-    const regimeAt = (date: string): Regime => ({ spy: (feed.barsAsOf("SPY", date, { strict: true, n: 250 }) ?? []).map((b) => b.close), vix: feed.asOf(feed.vix, addDays(date, -1)) ?? null });
+    const regimeAt = (date: string): Regime => ({ spy: (feed.barsAsOf("SPY", date, { strict: true, n: 250 }) ?? []).map((b) => b.close), vix: feed.asOf(feed.vix, addDays(date, -1)) ?? null, px: Object.fromEntries(["SPY", "QQQ"].map((x) => [x, feed.close(x, date)]).filter(([, c]) => c !== undefined)) });
     const gMon = regimeAt(w.entry);
     const gWed = regimeAt(w.mid);
 

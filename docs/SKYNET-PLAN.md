@@ -136,7 +136,7 @@ Its top section always holds **current state**, **open questions** and **next up
 
 **Strike and expiry**
 - Expected-move distance (`ai.strike.moves`, 0.5–1.5), and the aggressive tilt (`aggressiveMoves`, `aggressiveMinScore`). Exists.
-- A delta target instead of the expected move (0.10–0.35). Code; delta is in the data.
+- A delta target instead of the expected move (0.10–0.35). Built (`levers.putStrike: "delta"`).
 - Expiry: weekly (base), 2 weeks, or about 30–45 days and managed weekly. Code: positions span weeks.
 - Floor guard: ATR under the floor (`rules.strike.atrBelowFloor`). Exists.
 
@@ -153,12 +153,13 @@ Its top section always holds **current state**, **open questions** and **next up
 - Most names at once; top 5 only (Kyle's way) vs every eligible name (the AI's). Code.
 
 **Market regime**
-- VIX gate: no new puts above X, or smaller size. Code; VIX is in the data.
-- SPY trend gate: half size under the 200-day. Code.
+- VIX gate: no new puts above X, or smaller size. Built (`levers.vixMax`, `riskOffScale`).
+- SPY trend gate: no puts or smaller size under the N-day average, with an optional band. Built (`levers.spyMaDays`, `spyMaBand`, `riskOffScale`, `riskOffExit`).
+- Core holding: idle buying power in SPY/QQQ while risk-on. Built (`levers.core`).
 - The tech-bottom tripwires (`rules.techBottom`) as an on/off. Code.
 
 **Picking names**
-- Minimum score. Trend filter and never-sell zone on/off. Code.
+- Minimum score (built, `levers.minScore`). Trend filter and never-sell zone on/off. Code.
 - Universe:
   - ETFs only
   - single stocks only
@@ -170,7 +171,7 @@ Its top section always holds **current state**, **open questions** and **next up
   Code.
 
 **Assigned shares**
-- Stop below the floor (base), hold until green, or sell at the next open (no wheel). Code.
+- Stop below the floor (base), hold until green (built), a % stop from cost or a buffer under the floor (built, `levers.shareStop`, `stopBuffer`), or sell at the next open (no wheel). Code.
 - Covered call distance (`ai.coveredCall.moves`) and minimum premium. Exists.
 
 **Robustness** (not levers to optimise; every finalist has to survive them)

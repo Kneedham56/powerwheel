@@ -64,14 +64,26 @@ export interface Levers {
   minScore?: number;
   /** Stop out shares at this loss from cost (0.2 = 20%) instead of the floor stop. holdUntilGreen still wins. */
   shareStop?: number;
+  /** The floor stop fires only this far under the floor (0.03 = 3%). */
+  stopBuffer?: number;
   /** false: no new puts on Wednesday (take profit and stops still run). */
   wedRedeploy?: boolean;
   /** Risk-off when SPY's last close is under its N-day average. */
   spyMaDays?: number;
+  /** Risk-off only once SPY is this far under the average (0.02 = 2%), to cut whipsaw. */
+  spyMaBand?: number;
+  /** No puts on leveraged or inverse ETFs (engine.ts LEVERAGED). */
+  noLeveraged?: boolean;
   /** Risk-off when VIX closed above this. */
   vixMax?: number;
   /** Risk-off multiplies the day's exposure target by this (default 0: no new puts). */
   riskOffScale?: number;
+  /** Monday when risk-off: sell every share lot ("all") or only the ones under cost ("losers"). */
+  riskOffExit?: "all" | "losers";
+  /** Core holding: after Monday's puts, buy the core symbol up to this total exposure (1 = 1x the account); sold when risk-off. */
+  core?: number;
+  /** the core holding's symbol (default SPY) */
+  coreSymbol?: string;
 }
 
 /** Apply `a.b.c=value` overrides to a deep copy of a ruleset. Numbers and true/false are parsed. */
@@ -156,7 +168,22 @@ export const KINDRED_ROC1: Ruleset = {
   levers: { putStrike: "roc", rocTarget: 0.01 },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1 };
+/**
+ * Nasus: Kindred with the market regime and share handling from Claude's first solo round (2026-11-23). Puts stop
+ * while SPY is under its 175-day average, covered calls go on a quarter of each lot (the rest rides), and Wednesday
+ * takes profit at 70% instead of 50%. Everything else is Kindred.
+ */
+export const NASUS: Ruleset = {
+  ...KINDRED,
+  name: "Nasus",
+  parent: "Kindred",
+  created: "2026-11-23",
+  note: "Kindred + SPY 175-day risk-off gate (no new puts under it), covered calls on 25% of shares, take profit at 70%.",
+  ai: { ...KINDRED.ai, takeProfit: 0.7 },
+  levers: { ccCoverage: 0.25, spyMaDays: 175 },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];
