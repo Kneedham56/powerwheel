@@ -10,12 +10,12 @@
  */
 import { createWriteStream } from "node:fs";
 import { join } from "node:path";
-import { rankedCandidates, r2, spreadOf } from "../src/lib/race";
+import { r2, spreadOf } from "../src/lib/race";
 import { FUNDS, midOf, type Bar, type OptionQuote } from "../src/lib/rules";
 import { opt, setup } from "./backtest";
-import { aiTarget, regimeScale } from "./engine";
+import { aiTarget, ranked, regimeScale } from "./engine";
 import { addDays, DATA_DIR } from "./feed";
-import { buildCandidates, realMarket, targetExpiry, type CandidateMeta } from "./logic";
+import { buildCandidates, realMarket, regimeFeatures, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, withOverrides } from "./rulesets";
 import { loadSectors } from "./sectors";
 
@@ -92,7 +92,7 @@ export async function picksCmd() {
     const monExp = targetExpiry(rs.rules, w.entry);
     const w4 = weeks[i + 4]?.last;
     const w13 = weeks[i + 13]?.last;
-    for (const [rank, c] of rankedCandidates(cands).entries()) {
+    for (const [rank, c] of ranked(rs, cands).entries()) {
       const book = feed.book(c.symbol, w.entry, "put", monExp);
       const spot = feed.close(c.symbol, w.entry) ?? c.last;
       const target = aiTarget(rs, c);
@@ -160,4 +160,51 @@ export async function picksCmd() {
   }
   out.end();
   console.log(`Wrote ${n} rows to ${file}`);
+}
+
+/**
+ * Regime study: the adaptive report's regime features for every Sunday (bars through Friday only), in a few
+ * parameter settings, for the pick study's switch rules (data/skynet/tools/switch.js).
+ *
+ *   npm run skynet -- regime [--from 2018-01-01] [--to 2025-12-31] [--symbols ...]
+ *
+ * Writes data/skynet/regime.jsonl: one row per week, keyed by the Monday entry date like the pick file.
+ */
+export async function regimeCmd() {
+  const { feed, o } = await setup("2018-01-01", "2025-12-31");
+  const stocks = o.symbols.filter((s) => !FUNDS[s] && s !== "SPY");
+  const weeks = feed.weeks(addDays(o.from, -10), o.to);
+  const first = weeks.findIndex((w) => w.entry >= o.from);
+  const file = join(DATA_DIR, "skynet", "regime.jsonl");
+  const out = createWriteStream(file);
+  const variants: Record<string, Parameters<typeof regimeFeatures>[3]> = {
+    "": {},
+    m8: { mom: { weeks: 8 } },
+    h2: { mom: { horizon: 2 } },
+    t5: { mom: { top: 0.2 } },
+    c13: { crash: { weeks: 13 } },
+    c26: { crash: { weeks: 26 } },
+  };
+  let n = 0;
+  for (let i = first; i < weeks.length; i++) {
+    const w = weeks[i];
+    const prev = weeks[i - 1];
+    const bars: Record<string, Bar[]> = {};
+    for (const s of ["SPY", ...stocks]) {
+      const b = feed.barsAsOf(s, w.entry, { strict: true });
+      if (b && b.length >= 2) bars[s] = b;
+    }
+    const vix = feed.vixUpTo(prev.last);
+    const row: Record<string, unknown> = { date: w.entry };
+    for (const [tag, A] of Object.entries(variants)) {
+      const f = regimeFeatures(bars, stocks, vix, A);
+      if (!tag) Object.assign(row, f);
+      else if (tag.startsWith("c")) Object.assign(row, { [`crash_${tag}`]: f.crash, [`crashDrop_${tag}`]: f.crashDrop, [`crashBounce_${tag}`]: f.crashBounce });
+      else Object.assign(row, { [`mom_${tag}`]: f.mom, [`momHit_${tag}`]: f.momHit });
+    }
+    out.write(JSON.stringify(row) + "\n");
+    n++;
+  }
+  out.end();
+  console.log(`Wrote ${n} weeks to ${file}`);
 }

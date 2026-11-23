@@ -29,7 +29,7 @@ import {
   type Stage,
   type Tech,
 } from "../src/lib/rules";
-import type { PrepLevers, Rules } from "./rulesets";
+import type { AdaptLevers, PrepLevers, Rules } from "./rulesets";
 
 // ---------------------------------------------------------------------------
 // indicators (rules.ts techAt)
@@ -263,6 +263,8 @@ export interface CandidateInputs {
   watchlist: string[];
   scanSymbols: string[];
   quotes: Record<string, OptionQuote[]>;
+  /** Skynet only (the adaptive report): VIX closes through Friday, oldest first */
+  vix?: number[];
 }
 
 export interface RotationRow {
@@ -271,7 +273,14 @@ export interface RotationRow {
 }
 
 /** Features the prep levers read (rulesets.ts PrepLevers). Missing inputs leave a feature out. */
-export function prepFeatures(t: Tech, bars: Bar[], m: CandidateMeta, put: OptionQuote | null, rs4: number | null, rs13: number | null, from: string): Record<string, number> {
+/** A per-name, per-date number in [0, 1) with no market information (a placebo filter or bonus). */
+function hashRand(symbol: string, date: string) {
+  let h = 2166136261;
+  for (const ch of `${symbol}|${date}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+  return (Math.imul(h ^ (h >>> 15), 2246822519) >>> 0) / 2 ** 32;
+}
+
+export function prepFeatures(t: Tech, bars: Bar[], m: CandidateMeta, put: OptionQuote | null, rs4: number | null, rs13: number | null, from: string, symbol = ""): Record<string, number> {
   const c = bars.map((b) => b.close);
   const f: Record<string, number | null> = {
     ret6m: c.length > 126 ? c.at(-1)! / c[c.length - 127] - 1 : null,
@@ -294,6 +303,7 @@ export function prepFeatures(t: Tech, bars: Bar[], m: CandidateMeta, put: Option
     otm: put ? 1 - put.strike / t.last : null,
     price: t.last,
     term: m.termRatio ?? null,
+    rand: hashRand(symbol, from),
   };
   if (c.length > 61) {
     const lr = c.slice(-61).slice(1).map((x, i) => Math.log(x / c[c.length - 61 + i]));
@@ -306,7 +316,140 @@ export function prepFeatures(t: Tech, bars: Bar[], m: CandidateMeta, put: Option
   return Object.fromEntries(Object.entries(f).filter(([, v]) => v !== null && Number.isFinite(v))) as Record<string, number>;
 }
 
-export function buildCandidates(R: Rules, inp: CandidateInputs, P?: PrepLevers): { expiry: string; rotation: RotationRow[]; candidates: CandidateRow[] } {
+// ---------------------------------------------------------------------------
+// regime features for the adaptive report (rulesets.ts AdaptLevers), from bars through Friday only
+// ---------------------------------------------------------------------------
+
+const ramp01 = (v: number, a: number, b: number) => Math.max(0, Math.min(1, (v - a) / (b - a)));
+const sd = (xs: number[]) => {
+  const m = mean(xs);
+  return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
+};
+
+/**
+ * Market-regime features as of the last bar (Friday's close). Every number reads bars at or before that close: the
+ * momentum spread looks at cohorts formed `horizon` weeks or more ago and their returns up to Friday at most.
+ */
+export function regimeFeatures(bars: Record<string, Bar[]>, stocks: string[], vix: number[] | undefined, A: Pick<AdaptLevers, "mom" | "crash">): Record<string, number> {
+  const spyB = bars.SPY;
+  const out: Record<string, number> = {};
+  if (!spyB?.length) return out;
+  const spy = spyB.map((b) => b.close);
+  const E = spy.length;
+  const last = spy[E - 1];
+  const lastDate = spyB[E - 1].date;
+
+  // SPY trend and the crash setup
+  const s200 = sma(spy, 200);
+  if (s200) out.spyVs200 = last / s200 - 1;
+  const r4 = ret(spy, 20);
+  const r13 = ret(spy, 63);
+  if (r4 !== null) out.spyRet4 = r4;
+  if (r13 !== null) out.spyRet13 = r13;
+  const hi6 = Math.max(...spy.slice(-126));
+  out.spyDd = last / hi6 - 1;
+  const C = { drop: 0.1, weeks: 8, bounce: 0.05, lag: 0, ...A.crash };
+  {
+    // lag: the same test as of `lag` weeks earlier (a placebo with the right shape and the wrong timing)
+    const sp = spy.slice(0, Math.max(1, E - 5 * C.lag));
+    const n = sp.length;
+    let worst = 0;
+    let lowAt = -1;
+    for (let j = Math.max(0, n - C.weeks * 5); j < n; j++) {
+      const peak = Math.max(...sp.slice(Math.max(0, j - 126), j + 1));
+      const dd = sp[j] / peak - 1;
+      if (dd < worst) {
+        worst = dd;
+        lowAt = j;
+      }
+    }
+    out.crashDrop = worst;
+    out.crashBounce = lowAt >= 0 ? sp[n - 1] / sp[lowAt] - 1 : 0;
+    out.crash = worst <= -C.drop && out.crashBounce >= C.bounce ? 1 : 0;
+  }
+
+  // placebo for switch rules: a coin flip from the date alone (no market information)
+  out.coin = (Math.imul(Number(lastDate.replaceAll("-", "")), 2654435761) >>> 20) & 1;
+  out.u = (Math.imul(Number(lastDate.replaceAll("-", "")) ^ 0x5bd1e995, 2246822519) >>> 0) / 2 ** 32;
+
+  if (vix?.length) {
+    out.vix = vix[vix.length - 1];
+    if (vix.length >= 50) out.vixVs50 = out.vix / mean(vix.slice(-50)) - 1;
+  }
+
+  // stocks aligned to SPY's calendar: the same last date, then index from the end
+  const M = { weeks: 13, horizon: 4, top: 1 / 3, ...A.mom };
+  const H = M.horizon * 5;
+  const al: number[][] = [];
+  for (const s of stocks) {
+    const b = bars[s];
+    if (!b || b.length < 30 || b[b.length - 1].date !== lastDate) continue;
+    al.push(b.map((x) => x.close));
+  }
+  // breadth and dispersion now
+  let up = 0;
+  let n200 = 0;
+  const r20: number[] = [];
+  for (const c of al) {
+    const m = sma(c, 200);
+    if (m) {
+      n200++;
+      if (c[c.length - 1] > m) up++;
+    }
+    const r = ret(c, 20);
+    if (r !== null && Number.isFinite(r)) r20.push(Math.max(-0.6, Math.min(1.5, r)));
+  }
+  if (n200) out.breadth = up / n200;
+  if (r20.length > 20) out.disp = sd(r20);
+
+  // momentum spread: cohorts cut at E-1-5k (k = horizon .. horizon+weeks-1), scored on Azir's momentum at the cut,
+  // judged by the return from the cut to `horizon` weeks later (at or before Friday)
+  const spreads: number[] = [];
+  for (let k = M.horizon; k < M.horizon + M.weeks; k++) {
+    const back = 5 * k; // bars back from the end to the cut
+    const cutS = E - 1 - back;
+    if (cutS < 64) break;
+    const spyRet13 = spy[cutS] / spy[cutS - 63] - 1;
+    const rows: { m: number; f: number }[] = [];
+    for (const c of al) {
+      const cut = c.length - 1 - back;
+      if (cut < 200) continue;
+      const m200 = sma(c, 200, cut + 1)!;
+      const vs200 = c[cut] / m200 - 1;
+      if (vs200 <= 0) continue; // the candidate pool is uptrending names
+      const rs13 = c[cut] / c[cut - 63] - 1 - spyRet13;
+      const f = c[cut + H] / c[cut] - 1;
+      if (!Number.isFinite(f) || !Number.isFinite(rs13)) continue;
+      rows.push({ m: ramp01(vs200, 0, 0.5) + ramp01(rs13, 0, 0.3), f: Math.max(-0.6, Math.min(1.5, f)) });
+    }
+    if (rows.length < 20) continue;
+    rows.sort((a, b) => b.m - a.m);
+    const nTop = Math.max(1, Math.round(rows.length * M.top));
+    spreads.push(mean(rows.slice(0, nTop).map((r) => r.f)) - mean(rows.slice(nTop).map((r) => r.f)));
+  }
+  if (spreads.length) {
+    out.mom = mean(spreads);
+    out.momHit = spreads.filter((x) => x > 0).length / spreads.length;
+    out.momLast = spreads[0];
+  }
+  return out;
+}
+
+/** Every feature inside its [min, max] (null = no bound; a missing feature fails). */
+const holds = (when: Record<string, [number | null, number | null]> | undefined, f: Record<string, number>) =>
+  Object.entries(when ?? {}).every(([k, [lo, hi]]) => f[k] !== undefined && (lo === null || f[k] >= lo) && (hi === null || f[k] <= hi));
+
+/** Which ranking the adaptive report uses this Sunday. */
+export function adaptChoice(A: AdaptLevers, f: Record<string, number>): "alt" | "base" | "blend" {
+  if (A.mode !== "switch") return A.mode;
+  return holds(A.when, f) ? "alt" : (A.otherwise ?? "base");
+}
+
+export function buildCandidates(
+  R: Rules,
+  inp: CandidateInputs,
+  P?: PrepLevers,
+): { expiry: string; rotation: RotationRow[]; candidates: CandidateRow[]; regime?: { choice: "alt" | "base" | "blend"; features: Record<string, number> } } {
   const { bars, meta } = inp;
   if (!bars.SPY?.length) throw new Error(`No SPY bars before ${inp.runDate}.`);
   const spy = techAt(R, bars.SPY)!;
@@ -331,6 +474,20 @@ export function buildCandidates(R: Rules, inp: CandidateInputs, P?: PrepLevers):
   ];
   const seen = new Set<string>();
   const candidates: CandidateRow[] = [];
+  const A = P?.adapt;
+  const RA: Rules | null = A ? { ...R, score: { ...R.score, ...A.alt.score } } : null;
+  const altScore = new Map<CandidateRow, number>();
+  const baseScore = new Map<CandidateRow, number>();
+  const withBonus = (raw: number, feat: Record<string, number>, bonus: Record<string, [number, number, number]> | undefined, cap: number | undefined) => {
+    let extra = 0;
+    for (const [k, [a, b, pts]] of Object.entries(bonus ?? {})) {
+      const v = feat[k];
+      if (v === undefined || a === b) continue;
+      extra += pts * Math.max(0, Math.min(1, (v - a) / (b - a)));
+    }
+    return Math.max(0, Math.min(cap ?? 100, Math.round(raw + extra)));
+  };
+  const rawOf = (p: ScoreParts) => p.trend + p.rotation + p.location + p.premium + p.liquidity - p.penalty;
   for (const { symbol, source } of order) {
     if (seen.has(symbol) || !bars[symbol]?.length) continue;
     seen.add(symbol);
@@ -361,7 +518,7 @@ export function buildCandidates(R: Rules, inp: CandidateInputs, P?: PrepLevers):
     if (fundOut && call.pref <= 3) flags.push(`Fund is ${groupQ ?? "unranked"}: no new puts`);
 
     let eligible = call.pref <= 3 && bigEnough && !fundOut && !(qs.length && !chosen) && !(chosen && chosen.expiry !== expiry);
-    const feat = P ? prepFeatures(t, bars[symbol], m, chosen, rs4, rs13, inp.runDate) : null;
+    const feat = P ? prepFeatures(t, bars[symbol], m, chosen, rs4, rs13, inp.runDate, symbol) : null;
     if (P && eligible) {
       if (P.turningUp === false && call.pref === 3) eligible = false;
       for (const [k, [lo, hi]] of Object.entries(P.filters ?? {})) {
@@ -376,18 +533,11 @@ export function buildCandidates(R: Rules, inp: CandidateInputs, P?: PrepLevers):
     let liquidity: number | null = null;
     if (chosen) liquidity = (chosen.ask! - chosen.bid!) / midOf(chosen)! <= 0.1 ? 1 : 0.6;
     else if (m.optionsVolume) liquidity = m.optionsVolume >= 50000 ? 0.9 : m.optionsVolume >= 10000 ? 0.7 : m.optionsVolume >= 2000 ? 0.5 : 0.3;
-    const sc = call.pref <= 3 ? score(R, { stage: st, tech: t, groupQuadrant: groupQ, premiumWeekly: prem, ivRank: m.ivRank ?? null, liquidity }) : null;
+    const scIn: ScoreInput = { stage: st, tech: t, groupQuadrant: groupQ, premiumWeekly: prem, ivRank: m.ivRank ?? null, liquidity };
+    const sc = call.pref <= 3 ? score(R, scIn) : null;
     if (sc?.checkWhy) flags.push("Check why: over 2% a week");
-    if (sc && P) {
-      let extra = 0;
-      for (const [k, [a, b, pts]] of Object.entries(P.bonus ?? {})) {
-        const v = feat![k];
-        if (v === undefined || a === b) continue;
-        extra += pts * Math.max(0, Math.min(1, (v - a) / (b - a)));
-      }
-      const raw = sc.parts.trend + sc.parts.rotation + sc.parts.location + sc.parts.premium + sc.parts.liquidity - sc.parts.penalty + extra;
-      sc.total = Math.max(0, Math.min(P.maxScore ?? 100, Math.round(raw)));
-    }
+    if (sc && P) sc.total = withBonus(rawOf(sc.parts), feat!, P.bonus, P.maxScore);
+    const alt = sc && A ? withBonus(rawOf(score(RA!, scIn).parts), feat!, A.alt.bonus, A.alt.maxScore) : null;
 
     if (source === "Scan" && !eligible) continue;
     if (source === "Fund" && (call.pref > 3 || fundOut)) continue;
@@ -423,9 +573,83 @@ export function buildCandidates(R: Rules, inp: CandidateInputs, P?: PrepLevers):
       parts: sc?.parts ?? null,
       flags,
     });
+    if (alt !== null) {
+      altScore.set(candidates.at(-1)!, alt);
+      baseScore.set(candidates.at(-1)!, sc!.total);
+    }
   }
-  candidates.sort(
-    (a, b) => Number(b.eligible) - Number(a.eligible) || (b.score ?? -1) - (a.score ?? -1) || a.pref - b.pref || (b.rs13 ?? -9) - (a.rs13 ?? -9),
-  );
-  return { expiry, rotation, candidates };
+  const byRank = (a: CandidateRow, b: CandidateRow) =>
+    Number(b.eligible) - Number(a.eligible) || (b.score ?? -1) - (a.score ?? -1) || a.pref - b.pref || (b.rs13 ?? -9) - (a.rs13 ?? -9);
+  if (!A) {
+    candidates.sort(byRank);
+    return { expiry, rotation, candidates };
+  }
+
+  const features = regimeFeatures(bars, inp.scanSymbols, inp.vix, A);
+  const choice = adaptChoice(A, features);
+  const ranked = adaptiveOrder(A, choice, features, candidates, altScore, baseScore, byRank);
+  return { expiry, rotation, candidates: trimList(A, features, ranked), regime: { choice, features } };
 }
+
+/** The adaptive report's order: one ranking's scores, or the two interleaved (blend). Mutates the rows' scores. */
+function adaptiveOrder(
+  A: AdaptLevers,
+  choice: "alt" | "base" | "blend",
+  features: Record<string, number>,
+  candidates: CandidateRow[],
+  altScore: Map<CandidateRow, number>,
+  baseScore: Map<CandidateRow, number>,
+  byRank: (a: CandidateRow, b: CandidateRow) => number,
+): CandidateRow[] {
+  const scored = (m: Map<CandidateRow, number>) => {
+    for (const [c, v] of m) c.score = v;
+    return [...candidates].sort(byRank);
+  };
+  if (choice !== "blend") return scored(choice === "alt" ? altScore : baseScore);
+
+  // blend: interleave the two orders (each slot goes to the ranking behind on its share), no duplicates. A name keeps
+  // the score of the ranking that placed it; the engine keeps this order (engine.ts ranked).
+  const share = A.blendShare ?? 0.5;
+  const byAlt = scored(altScore).filter((c) => c.eligible && c.score !== null);
+  const altOf = new Map(byAlt.map((c) => [c.symbol, c.score!]));
+  const byBase = scored(baseScore).filter((c) => c.eligible && c.score !== null);
+  const out: CandidateRow[] = [];
+  const placed = new Set<string>();
+  const next = (list: CandidateRow[], from: number) => {
+    let k = from;
+    while (k < list.length && placed.has(list[k].symbol)) k++;
+    return k;
+  };
+  let ia = 0;
+  let ib = 0;
+  let nAlt = 0;
+  while (out.length < byAlt.length) {
+    const takeAlt = (nAlt + 1) / (out.length + 1) <= share + 1e-9;
+    if (takeAlt) ia = next(byAlt, ia);
+    else ib = next(byBase, ib);
+    const c = takeAlt ? byAlt[ia] : byBase[ib];
+    if (!c) break;
+    c.score = takeAlt ? altOf.get(c.symbol)! : baseScore.get(c)!;
+    placed.add(c.symbol);
+    out.push(c);
+    if (takeAlt) nAlt++;
+  }
+  const rest = candidates.filter((c) => !placed.has(c.symbol));
+  for (const c of rest) if (baseScore.has(c)) c.score = baseScore.get(c)!;
+  return [...out, ...rest.sort(byRank)];
+}
+
+/** trim: in the named regime only the top `keep` names stay eligible. */
+function trimList(A: AdaptLevers, features: Record<string, number>, list: CandidateRow[]) {
+  if (!A.trim || !holds(A.trim.when, features)) return list;
+  let n = 0;
+  for (const c of list) {
+    if (!c.eligible || c.score === null || c.target_strike === null) continue;
+    if (++n > A.trim.keep) {
+      c.eligible = false;
+      c.flags.push("Trimmed: regime");
+    }
+  }
+  return list;
+}
+

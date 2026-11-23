@@ -64,11 +64,13 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
   }
   const id = param(sp, "run") ?? runs[0].id;
   const { run, error } = loadRun(id, runs);
+  const sums = listSummaries(runs);
+  const nameOf = new Map(sums.map((x) => [x.id, x.name]));
+  const ran = (st: string) => `${st.slice(0, 4)}-${st.slice(4, 6)}-${st.slice(6, 8)} ${st.slice(9, 11)}:${st.slice(11, 13)} UTC`;
+  // the open run first, so the dropdown always shows it at the top
+  const pickRuns = [...runs.filter((r) => r.id === id), ...runs.filter((r) => r.id !== id)];
   const picker = (
-    <RunPicker
-      current={id}
-      runs={runs.map((r) => ({ id: r.id, label: `${r.ruleset} · ${r.from} → ${r.to} · ran ${r.stamp.slice(0, 4)}-${r.stamp.slice(4, 6)}-${r.stamp.slice(6, 8)} ${r.stamp.slice(9, 11)}:${r.stamp.slice(11, 13)} UTC` }))}
-    />
+    <RunPicker current={id} runs={pickRuns.map((r) => ({ id: r.id, label: `${nameOf.get(r.id) ?? r.ruleset} · ${r.from} → ${r.to} · ran ${ran(r.stamp)}` }))} />
   );
   if (!run) {
     return (
@@ -90,7 +92,26 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
       >
         Skynet backtests
       </PageTitle>
-      <Compare runs={listSummaries(runs)} current={id} />
+      <section className="card border-l-4 border-l-accent">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-muted">Selected run</div>
+            <h2 className="text-lg font-semibold">{run.ruleset.name}</h2>
+            <div className="text-xs text-muted">
+              {run.options.from} → {run.options.to} · {run.options.symbols.length} symbols · ran {ran(id.split("_").at(-1) ?? "")}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3 text-sm">
+            <Link href="/skynet?view=study" className="text-accent hover:underline">
+              ← Back to Study
+            </Link>
+            <a href="#years" className="text-accent hover:underline">
+              Year → week → trades ↓
+            </a>
+          </div>
+        </div>
+      </section>
+      <Compare runs={sums} current={id} showAll={param(sp, "all") === "1"} />
       <Summary run={run} />
       <section className="card">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
@@ -123,24 +144,39 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
  * Every run over the same period as the open one, best CAGR first, against the base (the latest plain Kindred run on
  * the same number of symbols). A year's cell is green when it beat the base that year, red when it trailed.
  */
-function Compare({ runs, current }: { runs: (RunSummary & { id: string })[]; current: string }) {
+function Compare({ runs, current, showAll = false }: { runs: (RunSummary & { id: string })[]; current: string; showAll?: boolean }) {
   const cur = runs.find((r) => r.id === current);
   if (!cur || runs.length < 2) return null;
   // only runs on the same period and the same number of symbols compare fairly
   const same = runs.filter((r) => r.from === cur.from && r.to === cur.to && r.symbols === cur.symbols);
   const hidden = runs.length - same.length;
   const base = same.find((r) => r.name === "Kindred");
-  const rows = [...same].sort((a, b) => b.total.cagr - a.total.cagr);
+  const ranked = [...same].sort((a, b) => b.total.cagr - a.total.cagr);
+  const place = ranked.findIndex((r) => r.id === current) + 1;
+  // the selected run pinned on top, then the best runs; the rest only when asked (?all=1)
+  const rows = [cur, ...ranked.filter((r) => r.id !== cur.id)].slice(0, showAll ? undefined : 16);
   const years = cur.years.map((y) => y.year);
   const by = (r: RunSummary, yr: string) => r.years.find((y) => y.year === yr)?.return;
   const beats = base ? (r: RunSummary) => years.filter((yr) => (by(r, yr) ?? 0) > (by(base, yr) ?? 0)).length : null;
   const spy = cur.years;
   return (
-    <section className="card overflow-x-auto">
+    <section id="compare" className="card overflow-x-auto scroll-mt-4">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="font-medium">
-          All runs, {cur.from} → {cur.to}, {cur.symbols} symbols{hidden > 0 && <span className="ml-2 text-xs font-normal text-muted">({hidden} on other periods or symbol sets hidden)</span>}
+          Compare: runs on {cur.from} → {cur.to}, {cur.symbols} symbols{hidden > 0 && <span className="ml-2 text-xs font-normal text-muted">({hidden} on other periods or symbol sets hidden)</span>}
         </h2>
+        <span className="text-xs text-muted">
+          the selected run is pinned on top (#{place} of {ranked.length} by CAGR)
+          {!showAll && ranked.length > 16 && (
+            <>
+              {" "}
+              ·{" "}
+              <Link href={`/skynet?view=runs&run=${encodeURIComponent(current)}&all=1#compare`} className="text-accent hover:underline">
+                show all {ranked.length}
+              </Link>
+            </>
+          )}
+        </span>
         <span className="text-xs text-muted">
           best CAGR first · click a run to open it · {base ? `year cells: green beat ${base.name} that year, red trailed` : "no plain Kindred run to compare with"}
         </span>
@@ -168,8 +204,9 @@ function Compare({ runs, current }: { runs: (RunSummary & { id: string })[]; cur
           {rows.map((r) => {
             const d = base ? r.total.cagr - base.total.cagr : null;
             return (
-              <tr key={r.id} className={`border-b border-border/60 ${r.id === current ? "bg-accent/10" : "hover:bg-foreground/5"}`}>
-                <td className="py-1.5 text-left">
+              <tr key={r.id} className={`border-b border-border/60 ${r.id === current ? "border-b-2 border-b-accent/50 bg-accent/15" : "hover:bg-foreground/5"}`}>
+                <td className={`py-1.5 text-left ${r.id === current ? "border-l-4 border-l-accent pl-2" : ""}`}>
+                  {r.id === current && <span className="mr-1.5 rounded bg-accent px-1 py-px text-[10px] font-semibold uppercase text-white">selected</span>}
                   <Link href={`/skynet?view=runs&run=${encodeURIComponent(r.id)}`} className={r.id === current ? "font-semibold" : "hover:underline"}>
                     {r.name}
                   </Link>
@@ -237,7 +274,7 @@ function Summary({ run }: { run: RunFile }) {
  */
 function Years({ run, runId }: { run: RunFile; runId: string }) {
   return (
-    <section className="card overflow-x-auto">
+    <section id="years" className="card overflow-x-auto scroll-mt-4">
       <div className="mb-2 flex items-baseline justify-between">
         <h2 className="font-medium">Year by year</h2>
         <span className="text-xs text-muted">click a year for its weeks, and a week for its trades</span>

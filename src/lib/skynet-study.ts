@@ -14,8 +14,8 @@ import type { RunEntry } from "./skynet-runs";
  *     "intro": "…",
  *     "compare": ["kindred", "nasus", "azir"],                 // rulesets.ts keys for the rules table
  *     "sections": [{ "title": "…", "runs": [{ "dir": "nasus", "from": "2018-01-01", "to": "2025-12-31", "label": "…", "why": "…" }] }],
- *     "pooled": { "title": "…", "note": "…", "prefix": "Azir p", "control": "control",
- *                 "rows": [{ "label": "…", "variants": ["C7 + trend flat"] }] }
+ *     "pooled": [{ "title": "…", "note": "…", "prefix": "Azir p", "control": "control",
+ *                  "rows": [{ "label": "…", "variants": ["C7 + trend flat"] }] }]   // one section or a list of them
  *   }
  *
  * A run is the latest one in data/backtests/<dir> over that period. Pooled rows read every sweep run named
@@ -35,8 +35,20 @@ export interface StudyFile {
   intro?: string;
   compare?: string[];
   sections: { title: string; note?: string; runs: StudyRun[] }[];
-  pooled?: { title: string; note?: string; prefix: string; control: string; rows: { label: string; variants: string[]; why?: string }[] };
+  pooled?: PooledSection | PooledSection[];
 }
+export interface PooledSection {
+  title: string;
+  note?: string;
+  prefix: string;
+  control: string;
+  /** the control row's label (default "Nasus (control)") */
+  controlLabel?: string;
+  rows: { label: string; variants: string[]; why?: string }[];
+}
+
+/** The pooled sections, whether study.json has one or a list. */
+export const pooledSections = (study: StudyFile): PooledSection[] => (!study.pooled ? [] : Array.isArray(study.pooled) ? study.pooled : [study.pooled]);
 
 const file = () => join(process.cwd(), "data", "skynet", "study.json");
 
@@ -62,7 +74,11 @@ export interface PooledRow {
   delta: number;
   better: number;
   dd: number;
+  /** each universe's worst calendar year, averaged */
+  worst: number;
   sharpe: number;
+  /** the run on the full list (to open in All runs), if there is one */
+  fullId: string | null;
   /** per year: mean return minus control's, and how many universes beat control */
   years: { year: string; delta: number; better: number; n: number }[];
 }
@@ -70,24 +86,24 @@ export interface PooledRow {
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
 
-export function pooled(study: StudyFile, summaries: (RunSummary & { id: string })[]): { rows: PooledRow[]; control: PooledRow | null; universes: number } {
-  const P = study.pooled;
-  if (!P) return { rows: [], control: null, universes: 0 };
+type Sum = RunSummary & { id: string };
+
+export function pooled(P: PooledSection, summaries: Sum[]): { rows: PooledRow[]; control: PooledRow | null; universes: number } {
   const re = new RegExp(`^${esc(P.prefix)}\\d+( s(\\d+))? · (.*)$`);
   // variant -> universe -> summary (summaries are newest first, so the first one seen wins)
-  const by = new Map<string, Map<string, RunSummary>>();
+  const by = new Map<string, Map<string, Sum>>();
   for (const s of summaries) {
     if (s.from !== "2018-01-01" || s.to !== "2025-12-31") continue;
     const m = re.exec(s.name);
     if (!m) continue;
     const u = m[2] ? `s${m[2]}` : "full";
-    const v = by.get(m[3]) ?? new Map<string, RunSummary>();
+    const v = by.get(m[3]) ?? new Map<string, Sum>();
     if (!v.has(u)) v.set(u, s);
     by.set(m[3], v);
   }
-  const ctrl = by.get(P.control) ?? new Map<string, RunSummary>();
+  const ctrl = by.get(P.control) ?? new Map<string, Sum>();
   const row = (label: string, variants: string[], why?: string): PooledRow => {
-    const runs = new Map<string, RunSummary>();
+    const runs = new Map<string, Sum>();
     for (const v of variants) for (const [u, s] of by.get(v) ?? []) if (!runs.has(u)) runs.set(u, s);
     const us = [...runs.keys()].filter((u) => ctrl.has(u));
     const yrs = us.length ? runs.get(us[0])!.years.map((y) => y.year) : [];
@@ -100,14 +116,16 @@ export function pooled(study: StudyFile, summaries: (RunSummary & { id: string }
       delta: mean(us.map((u) => runs.get(u)!.total.cagr - ctrl.get(u)!.total.cagr)),
       better: us.filter((u) => runs.get(u)!.total.cagr > ctrl.get(u)!.total.cagr).length,
       dd: mean(us.map((u) => runs.get(u)!.total.dd)),
+      worst: mean(us.map((u) => Math.min(...runs.get(u)!.years.map((y) => y.return)))),
       sharpe: mean(us.map((u) => runs.get(u)!.total.sharpe ?? 0)),
+      fullId: runs.get("full")?.id ?? null,
       years: yrs.map((y) => {
         const ds = us.map((u) => yr(runs.get(u)!, y) - yr(ctrl.get(u)!, y));
         return { year: y, delta: mean(ds), better: ds.filter((d) => d > 0).length, n: ds.length };
       }),
     };
   };
-  return { rows: P.rows.map((r) => row(r.label, r.variants, r.why)), control: ctrl.size ? row("Nasus (control)", [P.control]) : null, universes: ctrl.size };
+  return { rows: P.rows.map((r) => row(r.label, r.variants, r.why)), control: ctrl.size ? row(P.controlLabel ?? "Nasus (control)", [P.control]) : null, universes: ctrl.size };
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +146,7 @@ const LABELS: [RegExp, string][] = [
   [/^levers\.prep\.bonus\.ivrv$/, "Sunday score bonus: options priced rich, 30-day IV ÷ 20-day realized vol (0 pts at 1.0, full at 1.6)"],
   [/^levers\.prep\.maxScore$/, "Sunday score cap"],
   [/^levers\.prep\.filters\.term$/, "Earnings filter: skip when front-week IV ÷ next-week IV is above this"],
+  [/^levers\.prep\.filters\.rv60$/, "Volatility limit: skip names whose 60-day realized volatility is above this (a year's worth)"],
 ];
 
 function flat(o: unknown, pre = "", out: Record<string, unknown> = {}) {
@@ -139,6 +158,7 @@ function flat(o: unknown, pre = "", out: Record<string, unknown> = {}) {
 const show = (path: string, v: unknown) => {
   if (v === undefined) return "off";
   if (Array.isArray(v) && v.length === 3 && path.includes(".bonus.")) return `up to ${v[2]} pts`;
+  if (Array.isArray(v) && v.length === 2 && path.includes(".filters.rv60")) return v[1] === null ? "off" : `${Math.round(Number(v[1]) * 100)}%`;
   if (typeof v === "number" && /ccCoverage|takeProfit/.test(path)) return `${Math.round(v * 100)}%`;
   if (typeof v === "number" && /spyMaDays/.test(path)) return `${v} days`;
   return Array.isArray(v) ? JSON.stringify(v) : String(v);

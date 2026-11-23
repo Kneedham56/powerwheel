@@ -92,7 +92,8 @@ export interface Levers {
  * Sunday-report levers. Features (logic.ts prepFeatures): ret6m, ret12m (returns), rv20, rv60 (realized vol), ivrv
  * (30-day IV ÷ 20-day realized), iv, ivRank, offHigh (vs the 52-week high, ≤ 0), worst60 (worst 5-day return in 60
  * days), toFloor (price ÷ floor − 1), rsi, pctB, vs50, vs200, rs4, rs13, weekly (the put's premium ÷ strike), otm
- * (1 − strike ÷ price), price, term (front-week ATM IV ÷ the next expiry's: 1.2+ usually means earnings that week).
+ * (1 − strike ÷ price), price, term (front-week ATM IV ÷ the next expiry's: 1.2+ usually means earnings that week),
+ * rand (a hash of the name and date in [0, 1): a placebo with no market information).
  */
 export interface PrepLevers {
   /** a candidate is eligible only when each feature is within [min, max] (null = no bound; a missing feature fails) */
@@ -105,6 +106,40 @@ export interface PrepLevers {
   fundGate?: boolean;
   /** allow "Turning up" names (pref 3) into the eligible list; false removes them */
   turningUp?: boolean;
+  /** Adaptive report (Veigar): a second "alt" score, and a rule that picks or mixes the two rankings each Sunday. */
+  adapt?: AdaptLevers;
+}
+
+/**
+ * The adaptive Sunday report. The ruleset's own score (rules.score + bonus/maxScore above) is the "base" ranking; `alt`
+ * is a second one (Azir's momentum tilt). Each Sunday the report uses one of them, or interleaves them, from regime
+ * features measured on bars through Friday's close only (logic.ts regimeFeatures):
+ *   mom      the momentum spread: over the last `mom.weeks` weekly cohorts whose `mom.horizon`-week outcome is already
+ *            known, the mean forward return of the top `mom.top` of uptrending stocks by Azir's momentum (vs200, rs13)
+ *            minus the rest's. > 0 means momentum has been paying.
+ *   momHit   the share of those cohorts where it paid
+ *   crash    1 when SPY fell `crash.drop`+ from its 6-month high to a low within the last `crash.weeks` weeks and has
+ *            bounced `crash.bounce`+ off that low (the momentum-crash setup), else 0. crashDrop / crashBounce: the parts.
+ *   spyVs200, spyRet4, spyRet13, spyDd (vs its 6-month high), vix, vixVs50 (VIX ÷ its 50-day average − 1),
+ *   breadth  share of stocks above their 200-day; disp: cross-sectional stdev of 20-day returns
+ *   coin     0 or 1 from a hash of the date: a placebo switch with no market information; u: the same, uniform in [0, 1)
+ */
+export interface AdaptLevers {
+  alt: { score?: Partial<Rules["score"]>; bonus?: Record<string, [number, number, number]>; maxScore?: number };
+  /** "alt": always the alt ranking. "base": always the base (to use `trim` alone). "blend": interleave the two (no timing).
+   * "switch": alt while `when` holds, else `otherwise`. */
+  mode: "alt" | "base" | "blend" | "switch";
+  /** blend: the share of slots that go to the alt ranking (default 0.5) */
+  blendShare?: number;
+  /** switch: alt only while every feature is inside [min, max] (null = no bound; a missing feature fails) */
+  when?: Record<string, [number | null, number | null]>;
+  /** switch: what to use when `when` fails (default "base") */
+  otherwise?: "base" | "blend";
+  mom?: { weeks?: number; horizon?: number; top?: number };
+  /** lag: test as of that many weeks earlier (a placebo: the same shape, the wrong timing) */
+  crash?: { drop?: number; weeks?: number; bounce?: number; lag?: number };
+  /** In a regime where every feature in `when` holds, only the top `keep` names stay eligible (fewer puts that week). */
+  trim?: { when: Record<string, [number | null, number | null]>; keep: number };
 }
 
 /** Apply `a.b.c=value` overrides to a deep copy of a ruleset. Numbers and true/false are parsed. */
@@ -136,7 +171,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus", "Azir"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {
@@ -228,7 +263,26 @@ export const AZIR: Ruleset = {
   },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR };
+/**
+ * Veigar: Azir with a volatility speed limit (Claude's third solo round, 2026-11-23). The Sunday report leaves out any
+ * name whose 60-day realized volatility is above 80% a year (and names with under 3 months of bars, which have none).
+ * The limit tightens on its own in wild markets: it removes almost nothing in 2018–19, about 10% of candidates in 2020
+ * and 18% in 2025. Pooled over 11 universes it gives up about 2%/yr of Azir's return (mostly 2025's speculative
+ * winners) for a smaller worst year, a better 2022 and a slightly smaller max drawdown. On the full list alone, and
+ * from later start dates, it trails both Nasus and Azir, so it's a record of the round, not a recommendation: Azir
+ * stays the best return. The round's adaptive reports (blend, momentum switch, crash guard: levers.prep.adapt) did no
+ * better than a random switch, so Veigar doesn't use them. Everything Monday to Friday is Nasus.
+ */
+export const VEIGAR: Ruleset = {
+  ...AZIR,
+  name: "Veigar",
+  parent: "Azir",
+  created: "2026-11-23",
+  note: "Azir + a volatility limit on the Sunday report: no names with 60-day realized vol above 80% a year.",
+  levers: { ...AZIR.levers, prep: { ...AZIR.levers!.prep, filters: { rv60: [null, 0.8] } } },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];

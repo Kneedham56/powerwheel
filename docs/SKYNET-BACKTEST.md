@@ -16,6 +16,7 @@ npm run skynet -- backtest --ruleset kindred --set ai.takeProfit=0.3 [--name "Ki
 npm run skynet -- parity [--from 2024-01-01] [--to 2024-06-30]     # Skynet's code vs src/lib, same answers?
 npm run skynet -- sectors                                         # data/sectors.json from the prep reports
 npm run skynet -- picks --ruleset nasus [--set ...]               # pick study: every Sunday candidate and its put's outcome
+npm run skynet -- regime                                          # the adaptive report's regime features for every Sunday
 ```
 
 - The backtest reads Parquet through an in-memory DuckDB, so it runs while a pull holds `data/skynet.duckdb`.
@@ -49,6 +50,7 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - **Kindred** is the first ruleset: the live rules and the race's AI playbook as of `RULES_VERSION` 2026.11.16.1, unchanged.
 - **Nasus** is Kindred plus three changes: no new puts while SPY is under its 175-day average, covered calls on 25% of each lot, and take profit at 70%.
 - **Azir** is Nasus with a reworked Sunday report. Every qualifying trend stage scores 20, premium weighs 30, and there are up to 10 bonus points each for distance above the 200-day, 13-week strength against SPY, and IV ÷ realized vol.
+- **Veigar** is Azir with a volatility limit on the Sunday report: no name whose 60-day realized volatility is above 80% a year (`levers.prep.filters={"rv60":[null,0.8]}`; names with under 3 months of bars have no rv60 and are left out too). It bites mostly in wild markets (about 10% of candidates in 2020, 18% in 2025, almost none in 2018–19). Pooled over 11 universes it gives up about 2%/yr of Azir's return for a smaller worst year and drawdown, but on the full list alone it trails both Nasus and Azir, so it's a record of the round rather than a recommendation. The adaptive reports below (blend, switch, crash guard) were tried for it and did no better than a random switch.
 
 ## Variants and levers
 
@@ -86,8 +88,46 @@ Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rules
 | `levers.prep.maxScore=200` | The score cap (default 100). Raise it with bonuses so the top names don't tie at 100. |
 | `levers.prep.fundGate=false` | Let funds outside Leading/Improving groups in on their own trend. |
 | `levers.prep.turningUp=false` | Drop "Turning up" names from the eligible list. |
+| `levers.prep.adapt={...}` | The adaptive report (below): a second score and a rule that picks or mixes the two rankings each Sunday. |
 
-The features are listed on `PrepLevers` in `skynet/rulesets.ts`: returns, realized vol, IV ÷ realized vol, IV rank, distance from the high, floor and averages, %B, RSI, the put's premium and distance, and `term`. `term` is the front week's at-the-money IV ÷ the next expiry's (`feed.termRatio`). An earnings report before the front expiry pushes it to about 1.2, so `term ≤ 1.15` stands in for prep's earnings rule. In 2023 it caught every earnings week of AAPL, NFLX, NVDA and JPM, with no false alarms. The report cache is keyed by `rules` and `levers.prep`.
+#### The adaptive report (`levers.prep.adapt`)
+
+The ruleset's own score is the **base** ranking. `adapt.alt` describes a second one: `score` (overrides of `rules.score`, e.g. the trend points and `premiumMax`), `bonus` and `maxScore`, in the same form as above. Azir's report as an alt on top of Nasus:
+
+```json
+{"score":{"trend":{"Leader pulling back":20,"Leader":20,"Turning up":20},"premiumMax":30},"bonus":{"vs200":[0,0.5,10],"rs13":[0,0.3,10],"ivrv":[1,1.6,10]},"maxScore":200}
+```
+
+`adapt.mode` decides how the two are used each Sunday:
+
+| Mode | What it does |
+|---|---|
+| `alt` | Always the alt ranking. Nasus + `alt` = Azir, trade for trade. |
+| `blend` | Interleave the two orders, base first, no duplicates (`blendShare`: the alt's share of slots, default 0.5). Each name keeps the score of the ranking that placed it, and the engine keeps this order (`ranked` in engine.ts). No timing. |
+| `switch` | The alt while every feature in `when` is inside its [min, max] (null = no bound), else `otherwise` (`base`, the default, or `blend`). |
+| `base` | Always the base ranking (to use `trim` on its own). |
+
+`adapt.trim={"when":{…},"keep":4}` shortens the list in a regime: while every feature in `when` holds, only the top `keep` names stay eligible (the rest are flagged "Trimmed: regime"), so fewer puts are sold that week.
+
+The switch reads **regime features** (`regimeFeatures` in `skynet/logic.ts`), measured from bars through Friday's close and VIX through Friday:
+
+| Feature | Meaning |
+|---|---|
+| `mom` | The momentum spread: for each weekly cohort `horizon` to `horizon + weeks − 1` weeks back (`adapt.mom`, default 4 and 13), the uptrending stocks (above their 200-day then) ranked by Azir's momentum bonus at that date (vs200, rs13); the top third's return over the next `horizon` weeks minus the rest's. Averaged over the cohorts. Every return ends at or before Friday. |
+| `momHit`, `momLast` | The share of those cohorts where momentum paid; the latest cohort's spread. |
+| `crash` | 1 when SPY fell `adapt.crash.drop`+ from its 6-month high to a low within the last `weeks` weeks and has bounced `bounce`+ off it (defaults 10%, 8, 5%): the momentum-crash setup. `crashDrop`, `crashBounce` are the parts. `crash.lag` runs the same test as of that many weeks earlier: a placebo with the right shape and the wrong timing. |
+| `spyVs200`, `spyRet4`, `spyRet13`, `spyDd` | SPY's distance from its 200-day, 4- and 13-week return, and distance from its 6-month high. |
+| `vix`, `vixVs50` | VIX's last close, and VIX ÷ its 50-day average − 1. |
+| `breadth`, `disp` | The share of stocks above their 200-day; the cross-sectional spread (stdev) of 20-day returns. |
+| `coin`, `u` | 0 or 1 (`coin`), or a number in [0, 1) (`u`), from a hash of the date: placebo switches with no market information. `"when":{"u":[0.23,null]}` uses the alt on a random 77% of Sundays. |
+
+Examples: the momentum switch is `{"mode":"switch","alt":{…},"when":{"mom":[0,null]}}`; the crash guard is `{"mode":"switch","alt":{…},"when":{"crash":[null,0.5]},"crash":{"drop":0.15,"weeks":13,"bounce":0.1}}`.
+
+**What the Veigar round found (2026-11-23):** on 11 universes, every timing rule (momentum switch, crash guards, blend) landed between Nasus and Azir, and none beat a random switch with the same share of weeks. The crash guard shifted 26 weeks late scored best of all. Path luck along the timeline is bigger than these signals, and slicing the stock list doesn't average it out. Hold any new switch rule to the `u` and `crash.lag` placebos.
+
+`npm run skynet -- regime` writes every Sunday's features (and a few parameter variants) to `data/skynet/regime.jsonl`, keyed by the Monday like the pick file, so switch rules can be tried in the pick study first (`data/skynet/tools/switch.js`).
+
+The features are listed on `PrepLevers` in `skynet/rulesets.ts`: returns, realized vol, IV ÷ realized vol, IV rank, distance from the high, floor and averages, %B, RSI, the put's premium and distance, `term`, and `rand` (a hash of the name and date: a placebo with no market information, e.g. `filters={"rand":[0.07,null]}` drops a random 7% of names each week). `term` is the front week's at-the-money IV ÷ the next expiry's (`feed.termRatio`). An earnings report before the front expiry pushes it to about 1.2, so `term ≤ 1.15` stands in for prep's earnings rule. In 2023 it caught every earnings week of AAPL, NFLX, NVDA and JPM, with no false alarms. The report cache is keyed by `rules` and `levers.prep`.
 
 ### Pick study
 

@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     "sync/**",
+    // local research data and scripts (gitignored)
+    "data/**",
   ]),
 ]);
 
