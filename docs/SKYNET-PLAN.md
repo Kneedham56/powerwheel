@@ -123,14 +123,14 @@ Its top section always holds **current state**, **open questions** and **next up
 | # | Run | Lever(s) | Status |
 |---|---|---|---|
 | 1 | Base case | Kindred as is | exists |
-| 2–6 | Aim for 0.2%, 0.5%, 1%, 1.5%, 2% weekly ROC | `ai.strikeMode: "roc"` + `ai.rocTarget`: pick the strike whose week's premium is closest to the target, instead of one expected move below. Two simpler alternatives: raise only the minimum (`ai.minWeekly`), or keep the expected-move strike and skip names that don't pay the target | code |
-| 7 | Never sell until green | Assigned shares have no stop (`ai.stopBelowFloor: false` for shares). They are held until the price is back at the cost, and covered calls only go at or above the cost | mostly exists; split the put cut from the share stop |
-| 8 | Never take assignment | Friday: an in-the-money put is either bought back at a loss (`ai.avoidAssignment: "buyback"`) or rolled out a week, same or lower strike, only for a net credit (`"roll"`). If no credit roll exists, it's bought back | code |
+| 2–6 | Aim for 0.2%, 0.5%, 1%, 1.5%, 2% weekly ROC | `levers.putStrike: "roc"` + `levers.rocTarget`: Monday puts take the furthest out-of-the-money strike that pays at least the target, instead of one expected move below. It's not just a higher minimum. Wednesday redeploys keep the expected-move strike | built |
+| 7 | Never sell until green | `levers.holdUntilGreen`: assigned shares are never sold (no floor stop, no downtrend sale); covered calls already go at or above the cost. The Wednesday put cut stays | built |
+| 8 | Never take assignment | Friday: an in-the-money put is either bought back at a loss (`ai.avoidAssignment: "buyback"`) or rolled out a week, same or lower strike, only for a net credit (`"roll"`). If no credit roll exists, it's bought back | buyback built (`levers.avoidAssignment`); roll needs Friday quotes |
 | 9 | Never covered call | `ai.coveredCall.use: false` | exists |
-| 10 | Covered call on only 50% of shares, sold at the top | `ai.coveredCall.coverage: 0.5` plus a top-zone gate (`ai.coveredCall.when: "stretched"`): sell the call only when the stock is stretched (≥2 ATR above its 20-day average, upper Bollinger, RSI > 70) | code |
-| 11 | High-IV names only | `universe.ivMin`: the 30-day ATM IV, or its rank against the whole universe that week | code (the data exists) |
+| 10 | Covered call on only 50% of shares, sold at the top | `levers.ccCoverage: 0.5` (built), plus a top-zone gate (`when: "stretched"`, not built yet): sell the call only when the stock is stretched (≥2 ATR above its 20-day average, upper Bollinger, RSI > 70) | coverage built |
+| 11 | High-IV names only | `levers.ivMin`: the 30-day ATM IV (a rank against the universe is a later option) | built |
 | 12 | S&P 500 names only | `universe.list: "sp500"`, needs the S&P membership as it stood on each date. Today's list adds survivorship bias | data + code |
-| 13 | Low-IV names only | `universe.ivMax` | code |
+| 13 | Low-IV names only | `levers.ivMax` | built |
 
 ### More levers to mix in
 

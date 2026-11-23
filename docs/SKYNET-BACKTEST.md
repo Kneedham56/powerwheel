@@ -12,6 +12,7 @@ In Windows PowerShell, type `npm.cmd` instead of `npm`.
 npm run skynet -- backtest --ruleset kindred [--from 2018-01-01] [--to 2025-12-31] [--symbols QQQ,IWM,TSLA]
                            [--fees 0.03] [--no-interest] [--margin-spread 0.015]
                            [--min-dollar-volume 1e8] [--quiet]
+npm run skynet -- backtest --ruleset kindred --set ai.takeProfit=0.3 [--name "Kindred · TP 30%"]   # a one-off variant
 npm run skynet -- parity [--from 2024-01-01] [--to 2024-06-30]     # Skynet's code vs src/lib, same answers?
 npm run skynet -- sectors                                         # data/sectors.json from the prep reports
 ```
@@ -45,6 +46,22 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - Names are random League of Legends champions and are never reused. Add every name to `USED_NAMES`.
 - Sweep variants hang under a parent (`parent: "Kindred"`) and are named like "Kindred · delta 0.22".
 - **Kindred** is the first ruleset: the live rules and the race's AI playbook as of `RULES_VERSION` 2026.11.16.1, unchanged.
+
+## Variants and levers
+
+`--set a.b=value[,c.d=value]` (repeatable) changes any field of the ruleset for one run. Numbers and true/false are parsed. The run is named "<ruleset> · <overrides>" unless `--name` says otherwise, and its `parent` is the ruleset. An existing field is checked, so a typo fails instead of doing nothing.
+
+Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rulesets.ts`). A missing lever means Kindred's behaviour, so parity is unaffected.
+
+| Lever | What it does |
+|---|---|
+| `levers.putStrike=roc` + `levers.rocTarget=0.01` | Monday puts take the furthest out-of-the-money strike, below Monday's price, that pays at least the target for the week. There's no expected-move or floor cap. Wednesday redeploys keep the expected-move strike. |
+| `levers.holdUntilGreen=true` | Assigned shares are never sold: no floor stop and no downtrend sale. They leave only by being called away. Covered calls already go at or above the cost. |
+| `levers.avoidAssignment=true` | Friday: an in-the-money put is bought back at intrinsic + $0.05 instead of assigned. There are no Friday quotes, so that price stands in for the fill. |
+| `levers.ccCoverage=0.5` | Covered calls on this share of each lot's contracts, rounded down. |
+| `levers.ivMin` / `levers.ivMax` | Puts only on names whose 30-day ATM IV is at least / at most this. |
+
+Each run also writes `summary.json`, the headline numbers that the /skynet compare table reads. The table puts every run on the same period and symbol count side by side, best CAGR first, with each year green or red against the plain Kindred run.
 
 ## How a week runs
 
@@ -89,6 +106,7 @@ Each run writes `data/backtests/<ruleset>/<from>_<to>_<timestamp>/` (gitignored,
 - `trades.csv`: every sale, buyback, expiry, assignment, share sale and skip, each with a note saying why
 - `graded.csv`: closed trades scored the way the race's review scores them (win = net premium after the move past the strike)
 - `years.csv`: the year-by-year summary
+- `summary.json`: the headline numbers for the compare table (written on first sight for older runs)
 
 The console prints the same year-by-year table next to **SPY buy and hold**, starting at the first Monday's close. The years are tagged: train 2018–2023, validate 2024–2025, final exam 2026. Judge a change year by year: it should help most years, not just the total. Run 2026 rarely.
 

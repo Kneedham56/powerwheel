@@ -676,13 +676,14 @@ async function main() {
   // the backtest reads Parquet only, so it runs while a pull holds the database
   if (cmd === "backtest") return (await import("./backtest")).backtestCmd();
   if (cmd === "parity") return (await import("./backtest")).parityCmd();
+  if (cmd === "cache") return (await import("./backtest")).cacheCmd();
   if (cmd === "sectors") return (await import("./sectors")).sectorsCmd();
   if (cmd === "priority") return priority();
   if (cmd === "bars") return bars();
   const cmds: Record<string, (s: Store) => Promise<void>> = { universe, plan, pull, ref, status, export: exportAll };
   const fn = cmd ? cmds[cmd] : undefined;
   if (!fn) {
-    console.log("usage: npm run skynet -- universe | priority | plan | pull | ref | bars | status | export | sectors | backtest | parity   (see docs/SKYNET-DATA.md, docs/SKYNET-BACKTEST.md)");
+    console.log("usage: npm run skynet -- universe | priority | plan | pull | ref | bars | status | export | sectors | cache | backtest | parity   (see docs/SKYNET-DATA.md, docs/SKYNET-BACKTEST.md)");
     process.exit(1);
   }
   let store: Store;

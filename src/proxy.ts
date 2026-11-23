@@ -6,8 +6,12 @@ import { SESSION_COOKIE, authEnabled, isValidSession } from "@/lib/auth";
  * Server actions re-check (see requireWrite in app/actions.ts); this only keeps pages private.
  */
 export async function proxy(request: NextRequest) {
-  if (!authEnabled()) return NextResponse.next();
   const path = request.nextUrl.pathname;
+  // local research mode: only the Skynet page (set SKYNET_ONLY=true in .env.local; never on a deploy)
+  if (process.env.SKYNET_ONLY === "true" && !path.startsWith("/skynet") && !path.startsWith("/api/")) {
+    return NextResponse.redirect(new URL("/skynet", request.url));
+  }
+  if (!authEnabled()) return NextResponse.next();
   if (path === "/login" || path === "/auth/login" || path === "/api/keepalive") return NextResponse.next();
   // the weekly prep is public on purpose: market and watchlist data only
   if (path === "/prep") return NextResponse.next();

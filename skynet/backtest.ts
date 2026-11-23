@@ -40,8 +40,8 @@ import { AI, FUNDS, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../
 import { friday, monday, wednesday, type EngineOptions } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
-import { getRuleset, liveRuleset, type Ruleset } from "./rulesets";
-import type { RunFile, RunOptions, Totals, YearRow } from "./results";
+import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
+import { summarize, type RunFile, type RunOptions, type Totals, type YearRow } from "./results";
 import { loadSectors } from "./sectors";
 
 /**
@@ -374,6 +374,7 @@ async function setup(defaultFrom: string, defaultTo: string): Promise<{ feed: Fe
   const want = opt("symbols")?.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
   for (const s of want ?? []) if (!fin.symbols.includes(s)) console.log(`Warning: ${s} hasn't finished downloading (${fin.note}); its results will be partial.`);
   const feed = await Feed.open();
+  feed.useCache = !flag("no-cache");
   const symbols = (want ?? fin.symbols).filter((s) => feed.hasOptions(s) && feed.hasBars(s));
   if (!symbols.length) throw new Error(`no symbols with both option data and bars (${fin.note})`);
   await feed.loadBars([...new Set(["SPY", ...Object.keys(FUNDS), ...symbols])]);
@@ -395,7 +396,8 @@ async function setup(defaultFrom: string, defaultTo: string): Promise<{ feed: Fe
 }
 
 export async function backtestCmd() {
-  const rs = getRuleset(opt("ruleset", "kindred")!);
+  const sets = argv.flatMap((a, i) => (a === "--set" ? argv[i + 1].split(",") : []));
+  const rs = withOverrides(getRuleset(opt("ruleset", "kindred")!), sets, opt("name"));
   const { feed, o } = await setup("2018-01-01", "2025-12-31");
   console.log(`Backtest ${rs.name} (from rules ${rs.basedOn}), ${o.from} to ${o.to}, ${usd(o.capital)}, margin to ${o.maxLeverage}x, fees $${o.fees}/contract, interest ${o.interest ? `T-bill, margin +${(o.marginSpread * 100).toFixed(1)}%` : "off"}`);
   const t0 = Date.now();
@@ -435,7 +437,7 @@ export async function backtestCmd() {
   for (const n of out.notes) console.log(`  ${n}`);
 
   const id = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
-  const dir = join(DATA_DIR, "backtests", rs.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), `${o.from}_${o.to}_${id}`);
+  const dir = join(DATA_DIR, "backtests", rs.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), `${o.from}_${o.to}_${id}`);
   mkdirSync(dir, { recursive: true });
   const run: RunFile = {
     format: 2,
@@ -453,6 +455,7 @@ export async function backtestCmd() {
     end_state: out.state,
   };
   writeFileSync(join(dir, "run.json"), JSON.stringify(run));
+  writeFileSync(join(dir, "summary.json"), JSON.stringify(summarize(run)));
   writeFileSync(join(dir, "weeks.csv"), csv(out.weeks.map((w) => ({ ...w, spy_value: w.opp_value, spy_return: w.opp_return, spy_drawdown: w.opp_drawdown }))));
   writeFileSync(join(dir, "trades.csv"), csv(out.trades));
   writeFileSync(join(dir, "graded.csv"), csv(graded.map(({ hold, ...g }) => ({ ...g, hold_close: hold?.close ?? null, hold_score: hold?.score ?? null, hold_edge: hold?.edge ?? null }))));
@@ -497,4 +500,25 @@ export async function parityCmd() {
   const sells = ta.filter((t) => t.action === "Sold put" || t.action === "Sold call").length;
   console.log(`${bad ? "PARITY FAILED" : "Parity OK"}: ${a.candidates.size} Sundays, ${ta.length} trade rows (${sells} sales), ${a.weeks.length} weeks, rules ${RULES_VERSION}.`);
   if (bad) process.exit(1);
+}
+
+/** Build data/cache (see feed.ts): every core day's chains and every week's IV, for every finished symbol. */
+export async function cacheCmd() {
+  const feed = await Feed.open();
+  feed.useCache = false;
+  await feed.loadBars(["SPY"]);
+  const symbols = opt("symbols")?.split(",") ?? Feed.finishedSymbols().symbols;
+  const weeks = feed.weeks("2016-01-01", opt("to") ?? new Date().toISOString().slice(0, 10));
+  const days = new Set<string>();
+  for (const [j, w] of weeks.entries()) {
+    if (j > 0) days.add(weeks[j - 1].last);
+    days.add(w.entry);
+    days.add(w.mid);
+  }
+  const t0 = Date.now();
+  console.log(`Caching ${symbols.length} symbols, ${days.size} chain days, ${weeks.length} IV days...`);
+  await feed.buildCache(symbols, [...days].sort(), weeks.map((w) => w.last), (s, i) => {
+    if (i % 50 === 0 || i === symbols.length - 1) console.log(`  ${i + 1}/${symbols.length} ${s}  ${Math.round((Date.now() - t0) / 1000)}s`);
+  });
+  console.log(`Wrote data/cache (${Math.round((Date.now() - t0) / 1000)}s)`);
 }

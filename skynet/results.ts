@@ -66,3 +66,41 @@ export interface RunFile {
   graded: GradedTrade[];
   end_state: RaceState;
 }
+
+/** A run's headline numbers, written next to run.json as summary.json so the compare table doesn't parse every run. */
+export interface RunSummary {
+  name: string;
+  parent: string | null;
+  note: string;
+  from: string;
+  to: string;
+  ran_at: string;
+  symbols: number;
+  total: Totals;
+  /** exposure at Friday's close, after the week's puts expired: mostly shares held */
+  avg_leverage: number;
+  /** put collateral sold each week (Monday + Wednesday) ÷ the account value going in, averaged over the weeks */
+  put_deploy?: number;
+  years: { year: string; split: YearRow["split"]; return: number; spy_return: number; max_drawdown: number }[];
+}
+
+export function summarize(run: Pick<RunFile, "ruleset" | "options" | "ran_at" | "total" | "years" | "weeks" | "trades">): RunSummary {
+  const lev = run.weeks.map((w) => w.leverage ?? 0);
+  const sold = new Map<number, number>();
+  for (const t of run.trades) if (t.action === "Sold put" && t.strike && t.qty) sold.set(t.week, (sold.get(t.week) ?? 0) + t.strike * 100 * t.qty);
+  const going = new Map(run.weeks.map((w, i) => [w.week, i ? run.weeks[i - 1].ai_value : run.options.capital]));
+  const deploy = run.weeks.map((w) => (sold.get(w.week) ?? 0) / (going.get(w.week) || run.options.capital));
+  return {
+    name: run.ruleset.name,
+    parent: run.ruleset.parent,
+    note: run.ruleset.note,
+    from: run.options.from,
+    to: run.options.to,
+    ran_at: run.ran_at,
+    symbols: run.options.symbols.length,
+    total: run.total,
+    avg_leverage: lev.length ? lev.reduce((a, b) => a + b, 0) / lev.length : 0,
+    put_deploy: deploy.length ? deploy.reduce((a, b) => a + b, 0) / deploy.length : 0,
+    years: run.years.map((y) => ({ year: y.year, split: y.split, return: y.return, spy_return: y.spy_return, max_drawdown: y.max_drawdown })),
+  };
+}

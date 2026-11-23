@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { RunPicker, SkynetChart } from "@/components/skynet/SkynetChart";
 import { WeekRow } from "@/components/skynet/WeekRow";
 import { Expandable, PageTitle, Stat, param } from "@/components/ui";
 import type { WeekRow as WeekRowData } from "@/lib/race";
 import { dayLabel } from "@/lib/rules";
-import { listRuns, loadRun } from "@/lib/skynet-runs";
-import type { RunFile, YearRow } from "../../../skynet/results";
+import { listRuns, listSummaries, loadRun } from "@/lib/skynet-runs";
+import type { RunFile, RunSummary, YearRow } from "../../../skynet/results";
 
 // Private and local only: backtest results are read from data/backtests on this machine (gitignored).
 
@@ -61,6 +62,7 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
   return (
     <div className="space-y-6">
       <PageTitle right={picker}>Skynet backtests</PageTitle>
+      <Compare runs={listSummaries(runs)} current={id} />
       <Summary run={run} />
       <section className="card">
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
@@ -86,6 +88,102 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
         docs/SKYNET-BACKTEST.md.
       </p>
     </div>
+  );
+}
+
+/**
+ * Every run over the same period as the open one, best CAGR first, against the base (the latest plain Kindred run on
+ * the same number of symbols). A year's cell is green when it beat the base that year, red when it trailed.
+ */
+function Compare({ runs, current }: { runs: (RunSummary & { id: string })[]; current: string }) {
+  const cur = runs.find((r) => r.id === current);
+  if (!cur || runs.length < 2) return null;
+  // only runs on the same period and the same number of symbols compare fairly
+  const same = runs.filter((r) => r.from === cur.from && r.to === cur.to && r.symbols === cur.symbols);
+  const hidden = runs.length - same.length;
+  const base = same.find((r) => r.name === "Kindred");
+  const rows = [...same].sort((a, b) => b.total.cagr - a.total.cagr);
+  const years = cur.years.map((y) => y.year);
+  const by = (r: RunSummary, yr: string) => r.years.find((y) => y.year === yr)?.return;
+  const beats = base ? (r: RunSummary) => years.filter((yr) => (by(r, yr) ?? 0) > (by(base, yr) ?? 0)).length : null;
+  const spy = cur.years;
+  return (
+    <section className="card overflow-x-auto">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-medium">
+          All runs, {cur.from} → {cur.to}, {cur.symbols} symbols{hidden > 0 && <span className="ml-2 text-xs font-normal text-muted">({hidden} on other periods or symbol sets hidden)</span>}
+        </h2>
+        <span className="text-xs text-muted">
+          best CAGR first · click a run to open it · {base ? `year cells: green beat ${base.name} that year, red trailed` : "no plain Kindred run to compare with"}
+        </span>
+      </div>
+      <table className="w-full min-w-[72rem] text-right text-xs tabular-nums">
+        <thead className="text-muted">
+          <tr className="border-b border-border">
+            <th className="py-1.5 text-left font-medium">Ruleset</th>
+            <th className="font-medium">Syms</th>
+            <th className="font-medium">Total</th>
+            <th className="font-medium">CAGR</th>
+            <th className="font-medium">vs base</th>
+            <th className="font-medium">Max DD</th>
+            <th className="font-medium">Win</th>
+            <th className="font-medium">Sharpe</th>
+            <th className="font-medium" title="put collateral sold each week (Monday + Wednesday) ÷ the account value">Puts/wk</th>
+            <th className="font-medium" title="exposure at Friday's close, after the week's puts expired: mostly shares held">Fri exp</th>
+            {base && <th className="font-medium">Yrs beat</th>}
+            {years.map((y) => (
+              <th key={y} className="font-medium">{y}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const d = base ? r.total.cagr - base.total.cagr : null;
+            return (
+              <tr key={r.id} className={`border-b border-border/60 ${r.id === current ? "bg-accent/10" : "hover:bg-foreground/5"}`}>
+                <td className="py-1.5 text-left">
+                  <Link href={`/skynet?run=${encodeURIComponent(r.id)}`} className={r.id === current ? "font-semibold" : "hover:underline"}>
+                    {r.name}
+                  </Link>
+                </td>
+                <td className="text-muted">{r.symbols}</td>
+                <td className={tone(r.total.ret)}>{spct(r.total.ret, 0)}</td>
+                <td className={tone(r.total.cagr)}>{spct(r.total.cagr)}</td>
+                <td className={r === base ? "text-muted" : tone(d)}>{r === base ? "base" : spct(d)}</td>
+                <td className="text-loss">{spct(r.total.dd, 0)}</td>
+                <td>{pctU(r.total.winRate, 0)}</td>
+                <td>{r.total.sharpe === null ? "—" : r.total.sharpe.toFixed(2)}</td>
+                <td>{r.put_deploy === undefined ? "—" : `${r.put_deploy.toFixed(2)}x`}</td>
+                <td>{r.avg_leverage.toFixed(2)}x</td>
+                {beats && <td className="text-muted">{r === base ? "—" : `${beats(r)}/${years.length}`}</td>}
+                {years.map((yr) => {
+                  const v = by(r, yr);
+                  const b = base && r !== base ? by(base, yr) : undefined;
+                  const bg = v === undefined || b === undefined ? "" : v > b + 1e-9 ? "bg-gain/15" : v < b - 1e-9 ? "bg-loss/15" : "";
+                  return (
+                    <td key={yr} className={`px-1 ${bg} ${tone(v)}`}>
+                      {spct(v, 0)}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+          <tr className="text-muted">
+            <td className="py-1.5 text-left">SPY buy and hold</td>
+            <td />
+            <td>{spct(cur.total.spy, 0)}</td>
+            <td>{spct(cur.total.spyCagr)}</td>
+            <td />
+            <td>{spct(cur.total.spyDd, 0)}</td>
+            <td colSpan={base ? 5 : 4} />
+            {spy.map((y) => (
+              <td key={y.year} className="px-1">{spct(y.spy_return, 0)}</td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </section>
   );
 }
 
@@ -128,7 +226,7 @@ function Years({ run, runId }: { run: RunFile; runId: string }) {
           <span>Trades</span>
           <span>Win rate</span>
           <span>Assigned</span>
-          <span>Avg lev</span>
+          <span title="exposure at Friday's close, after the week's puts expired: mostly shares held">Fri exp</span>
           <span>Net premium</span>
         </div>
         {run.years.map((y) => (

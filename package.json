@@ -14,7 +14,7 @@
     "sql": "node --import tsx scripts/sql.ts",
     "demo:seed": "node --import tsx scripts/demo-seed.ts",
     "setup:sql": "node scripts/make-setup-sql.mjs",
-    "skynet": "node --import tsx skynet/data.ts"
+    "skynet": "node --max-old-space-size=8192 --import tsx skynet/data.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
