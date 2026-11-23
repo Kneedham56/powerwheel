@@ -17,7 +17,7 @@
  * Results go to data/backtests/<ruleset>/<run id>/ (gitignored): run.json (what the /skynet page reads: totals, years,
  * weeks, trades), plus weeks.csv, trades.csv, graded.csv and years.csv for spreadsheets.
  */
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildSunday, emptyNarrative, type CandidateRow } from "../src/lib/prep";
 import {
@@ -31,13 +31,14 @@ import {
   type GradedTrade,
   type MondayInput,
   type RaceState,
+  type QuoteBook,
   type RunResult,
   type Trade,
   type WednesdayInput,
   type WeekRow,
 } from "../src/lib/race";
 import { AI, FUNDS, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../src/lib/rules";
-import { friday, monday, wednesday, type EngineOptions } from "./engine";
+import { friday, monday, wednesday, type EngineOptions, type Regime } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
@@ -73,8 +74,8 @@ interface SundayIn {
 interface Impl {
   label: string;
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
-  monday(s: RaceState, inp: MondayInput): RunResult;
-  wednesday(s: RaceState, inp: WednesdayInput): RunResult;
+  monday(s: RaceState, inp: MondayInput, g?: Regime): RunResult;
+  wednesday(s: RaceState, inp: WednesdayInput, g?: Regime): RunResult;
   friday(s: RaceState, inp: FridayInput): RunResult;
 }
 
@@ -82,8 +83,8 @@ function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
   return {
     label: rs.name,
     candidates: (inp) => buildCandidates(rs.rules, { runDate: inp.runDate, bars: inp.bars, meta: inp.meta, watchlist: [], scanSymbols: inp.stocks, quotes: inp.quotes }),
-    monday: (s, inp) => monday(rs, eo, s, inp),
-    wednesday: (s, inp) => wednesday(rs, eo, s, inp),
+    monday: (s, inp, g) => monday(rs, eo, s, inp, g),
+    wednesday: (s, inp, g) => wednesday(rs, eo, s, inp, g),
     friday: (s, inp) => friday(rs, eo, s, inp),
   };
 }
@@ -116,7 +117,15 @@ export interface RunOutput {
 }
 
 async function simulate(feed: Feed, impl: Impl, rs: Ruleset, o: SimOptions, keepCandidates = false): Promise<RunOutput> {
-  const R = rs.rules;
+  return (await simulateMany(feed, [{ impl, rs }], o, keepCandidates))[0];
+}
+
+/**
+ * Step several rulesets through the same weeks in one process: each year's chains are loaded once, and each Sunday
+ * report is built once per distinct `rules` (most variants only change `ai` or `levers`). Every run keeps its own
+ * state, so the results are the same as running each one alone.
+ */
+async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: SimOptions, keepCandidates = false): Promise<RunOutput[]> {
   const tradable = o.symbols;
   const funds = Object.keys(FUNDS);
   const stocks = tradable.filter((s) => !FUNDS[s] && s !== "SPY");
@@ -124,15 +133,33 @@ async function simulate(feed: Feed, impl: Impl, rs: Ruleset, o: SimOptions, keep
   const weeks = feed.weeks(addDays(o.from, -10), o.to);
   const first = weeks.findIndex((w) => w.entry >= o.from);
   if (first < 1) throw new Error(`no trading weeks from ${o.from}`);
-  const notes: string[] = [];
-
   const spyStart = feed.close("SPY", weeks[first].entry)!;
-  let state = newState(o.capital, weeks[first].entry, o.capital);
-  const trades: Trade[] = [];
-  const rows: WeekRow[] = [];
-  const candidates = new Map<string, CandidateRow[]>();
-  const factor = new Map<string, number>();
-  let interest = 0;
+
+  interface Run {
+    impl: Impl;
+    rs: Ruleset;
+    key: string;
+    state: RaceState;
+    trades: Trade[];
+    rows: WeekRow[];
+    candidates: Map<string, CandidateRow[]>;
+    factor: Map<string, number>;
+    notes: string[];
+    interest: number;
+  }
+  const rr: Run[] = runs.map(({ impl, rs }) => ({
+    impl,
+    rs,
+    key: `${impl.label === "src/lib" ? "live" : "skynet"}:${JSON.stringify(rs.rules)}`,
+    state: newState(o.capital, weeks[first].entry, o.capital),
+    trades: [],
+    rows: [],
+    candidates: new Map(),
+    factor: new Map(),
+    notes: [],
+    interest: 0,
+  }));
+  const rules = [...new Map(rr.map((r) => [r.key, r.rs.rules])).values()];
   let lastFriday = weeks[first - 1].last;
 
   // IV history for every week's last day (the Sunday report reads Friday's), from a year before the start
@@ -140,7 +167,7 @@ async function simulate(feed: Feed, impl: Impl, rs: Ruleset, o: SimOptions, keep
   await feed.loadIv(tradable, lastDays);
 
   // the Sunday report reads Friday's chain for next Friday (7 days out); 2+ expiries in this window = weeklies
-  const maxDays = R.pick.minExpiryDays + 11;
+  const maxDays = Math.max(...rules.map((R) => R.pick.minExpiryDays)) + 11;
   let loadedYear = "";
   for (let i = first; i < weeks.length; i++) {
     const w = weeks[i];
@@ -164,106 +191,125 @@ async function simulate(feed: Feed, impl: Impl, rs: Ruleset, o: SimOptions, keep
       loadedYear = year;
     }
 
+    const held = (r: Run) => [...new Set([...r.state.lots.map((l) => l.symbol), ...r.state.options.map((x) => x.symbol)])];
     // splits: shares and open options follow the stock (raw ÷ split-adjusted changes by the ratio). The factor is
     // remembered after every run for what's held, and forgotten once a name isn't, so an old split never reaches a
     // later position.
-    const splitCheck = (date: string) => {
-      for (const [sym, was] of factor) {
+    const splitCheck = (r: Run, date: string) => {
+      for (const [sym, was] of r.factor) {
         const f = feed.splitFactor(sym, date);
         if (f === null || Math.abs(f / was - 1) <= 0.01) continue;
         const m = was / f;
-        state = structuredClone(state);
-        for (const l of state.lots.filter((x) => x.symbol === sym)) Object.assign(l, { shares: l.shares * m, cost: l.cost / m, mark: l.mark / m });
-        for (const x of state.options.filter((y) => y.symbol === sym)) Object.assign(x, { strike: x.strike / m, contracts: x.contracts * m, price: x.price / m });
-        notes.push(`${date}: ${sym} split ${m.toFixed(3)} for 1; shares and open options adjusted`);
+        r.state = structuredClone(r.state);
+        for (const l of r.state.lots.filter((x) => x.symbol === sym)) Object.assign(l, { shares: l.shares * m, cost: l.cost / m, mark: l.mark / m });
+        for (const x of r.state.options.filter((y) => y.symbol === sym)) Object.assign(x, { strike: x.strike / m, contracts: x.contracts * m, price: x.price / m });
+        r.notes.push(`${date}: ${sym} split ${m.toFixed(3)} for 1; shares and open options adjusted`);
       }
     };
-    const remember = (date: string) => {
-      factor.clear();
-      for (const sym of held()) {
+    const remember = (r: Run, date: string) => {
+      r.factor.clear();
+      for (const sym of held(r)) {
         const f = feed.splitFactor(sym, date);
-        if (f !== null) factor.set(sym, f);
+        if (f !== null) r.factor.set(sym, f);
       }
     };
 
-    // Sunday: the report, from Friday's close
+    // Sunday: the report, from Friday's close (once per distinct rules)
     const runDate = addDays(w.monday, -1);
-    const expiry = targetExpiry(R, runDate);
     const sundayBars: Record<string, Bar[]> = {};
     for (const s of new Set(["SPY", ...funds, ...tradable])) {
       const b = feed.barsAsOf(s, w.entry, { strict: true });
       if (b && b.length >= 2) sundayBars[s] = b; // techAt needs two bars (a name listed on Friday has one)
     }
     const meta: Record<string, CandidateMeta> = {};
-    const quotes: Record<string, OptionQuote[]> = {};
     for (const s of tradable) {
       const ch = feed.chain(s, prev.last);
       const exps = new Set(ch.map((c) => c.expiry).filter((e) => e > prev.last));
       const dv = feed.dollarVolume(s, w.entry);
-      meta[s] = {
-        sector: sectors[s],
-        bigEnough: !!FUNDS[s] || (dv !== null && dv >= o.minDollarVolume),
-        ...feed.ivOn(s, prev.last),
-        weeklies: exps.size >= 2,
-      };
-      if (ch.length) quotes[s] = feed.book(s, prev.last, "put", expiry);
+      meta[s] = { sector: sectors[s], bigEnough: !!FUNDS[s] || (dv !== null && dv >= o.minDollarVolume), ...feed.ivOn(s, prev.last), weeklies: exps.size >= 2 };
     }
-    const rep = impl.candidates({ runDate, bars: sundayBars, meta, stocks, quotes });
-    const cands = rep.candidates.filter((c) => tradable.includes(c.symbol));
-    if (keepCandidates) candidates.set(runDate, cands);
+    const reports = new Map<string, CandidateRow[]>();
+    for (const r of rr) {
+      if (reports.has(r.key)) continue;
+      const expiry = targetExpiry(r.rs.rules, runDate);
+      const quotes: Record<string, OptionQuote[]> = {};
+      for (const s of tradable) if (feed.chain(s, prev.last).length) quotes[s] = feed.book(s, prev.last, "put", expiry);
+      reports.set(r.key, r.impl.candidates({ runDate, bars: sundayBars, meta, stocks, quotes }).candidates.filter((c) => tradable.includes(c.symbol)));
+    }
 
-    const putBook = (date: string, exp: string) => Object.fromEntries(tradable.filter((s) => feed.chain(s, date).length).map((s) => [s, feed.book(s, date, "put", exp)]));
-    const callBook = (date: string, exp: string) => Object.fromEntries([...new Set(state.lots.map((l) => l.symbol))].filter((s) => feed.chain(s, date).length).map((s) => [s, feed.book(s, date, "call", exp)]));
+    const putBooks = new Map<string, QuoteBook>();
+    const putBook = (date: string, exp: string) => {
+      const k = `${date}|${exp}`;
+      if (!putBooks.has(k)) putBooks.set(k, Object.fromEntries(tradable.filter((s) => feed.chain(s, date).length).map((s) => [s, feed.book(s, date, "put", exp)])));
+      return putBooks.get(k)!;
+    };
+    const callBook = (r: Run, date: string, exp: string) => Object.fromEntries([...new Set(r.state.lots.map((l) => l.symbol))].filter((s) => feed.chain(s, date).length).map((s) => [s, feed.book(s, date, "call", exp)]));
     const spotsOn = (date: string, syms: string[]) => Object.fromEntries(syms.map((s) => [s, feed.close(s, date)]).filter(([, v]) => v !== undefined)) as Record<string, number>;
-    const held = () => [...new Set([...state.lots.map((l) => l.symbol), ...state.options.map((x) => x.symbol)])];
+    const rate = (feed.asOf(feed.tbill, w.last) ?? 0) / 100;
+    const days = (Date.parse(w.last) - Date.parse(lastFriday)) / 864e5;
+    const spy = feed.close("SPY", w.last)!;
+    // the market as of the close before each run (no look-ahead)
+    const regimeAt = (date: string): Regime => ({ spy: (feed.barsAsOf("SPY", date, { strict: true, n: 250 }) ?? []).map((b) => b.close), vix: feed.asOf(feed.vix, addDays(date, -1)) ?? null, px: Object.fromEntries(["SPY", "QQQ"].map((x) => [x, feed.close(x, date)]).filter(([, c]) => c !== undefined)) });
+    const gMon = regimeAt(w.entry);
+    const gWed = regimeAt(w.mid);
 
-    // Monday
-    splitCheck(w.entry);
-    const monExpiry = targetExpiry(R, w.entry);
-    let r = impl.monday(state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(w.entry, monExpiry) }, spots: spotsOn(w.entry, held()) });
-    state = r.state;
-    trades.push(...r.trades);
-    remember(w.entry);
+    for (const run of rr) {
+      const cands = reports.get(run.key)!;
+      if (keepCandidates) run.candidates.set(runDate, cands);
+      const take = (res: RunResult) => {
+        run.state = res.state;
+        run.trades.push(...res.trades);
+      };
 
-    // Wednesday (skipped in a week too short to have one between entry and expiry)
-    if (w.mid !== w.entry && w.mid !== w.last) {
-      splitCheck(w.mid);
-      const bars: Record<string, Bar[]> = {};
-      for (const s of held()) {
-        const b = feed.barsAsOf(s, w.mid, { strict: true, n: 60 });
-        if (b) bars[s] = b;
+      // Monday
+      splitCheck(run, w.entry);
+      const monExpiry = targetExpiry(run.rs.rules, w.entry);
+      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)) }, gMon));
+      remember(run, w.entry);
+
+      // Wednesday (skipped in a week too short to have one between entry and expiry)
+      if (w.mid !== w.entry && w.mid !== w.last) {
+        splitCheck(run, w.mid);
+        const bars: Record<string, Bar[]> = {};
+        for (const s of held(run)) {
+          const b = feed.barsAsOf(s, w.mid, { strict: true, n: 60 });
+          if (b) bars[s] = b;
+        }
+        const exp = run.state.current!.expiry;
+        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars }, gWed));
+        remember(run, w.mid);
       }
-      r = impl.wednesday(state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, state.current!.expiry), calls: callBook(w.mid, state.current!.expiry) }, spots: spotsOn(w.mid, held()), bars });
-      state = r.state;
-      trades.push(...r.trades);
-      remember(w.mid);
-    }
 
-    // Friday: interest since last Friday, then settle
-    splitCheck(w.last);
-    if (o.interest) {
-      const rate = (feed.asOf(feed.tbill, w.last) ?? 0) / 100;
-      const days = (Date.parse(w.last) - Date.parse(lastFriday)) / 864e5;
-      const amt = state.cash * (state.cash >= 0 ? rate : rate + o.marginSpread) * (days / 365);
-      state = { ...state, cash: state.cash + amt };
-      interest += amt;
+      // Friday: interest since last Friday, then settle
+      splitCheck(run, w.last);
+      if (o.interest) {
+        const amt = run.state.cash * (run.state.cash >= 0 ? rate : rate + o.marginSpread) * (days / 365);
+        run.state = { ...run.state, cash: run.state.cash + amt };
+        run.interest += amt;
+      }
+      const fBars: Record<string, Bar[]> = {};
+      for (const s of held(run)) {
+        const b = feed.barsAsOf(s, w.last, { n: 60 });
+        if (b) fBars[s] = b;
+      }
+      const res = run.impl.friday(run.state, { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 } }) as RunResult & { week?: WeekRow };
+      take(res);
+      remember(run, w.last);
+      if (res.week) run.rows.push({ ...res.week, note: [res.week.note, `vix ${feed.asOf(feed.vix, w.last) ?? ""}`].filter(Boolean).join("; ") });
     }
     lastFriday = w.last;
-    const fBars: Record<string, Bar[]> = {};
-    for (const s of held()) {
-      const b = feed.barsAsOf(s, w.last, { n: 60 });
-      if (b) fBars[s] = b;
-    }
-    const spy = feed.close("SPY", w.last)!;
-    r = impl.friday(state, { date: w.last, closes: spotsOn(w.last, held()), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 } });
-    state = r.state;
-    trades.push(...r.trades);
-    remember(w.last);
-    if (r.week) rows.push({ ...r.week, note: [r.week.note, `vix ${feed.asOf(feed.vix, w.last) ?? ""}`].filter(Boolean).join("; ") });
-    if (!o.quiet && w.last.slice(0, 4) !== weeks[i + 1]?.last.slice(0, 4)) console.log(`  ${year}: ${usd(state.lastValue)} (${pct(state.lastValue / o.capital - 1)}), ${trades.length} trade rows so far`);
+    if (!o.quiet && w.last.slice(0, 4) !== weeks[i + 1]?.last.slice(0, 4))
+      for (const run of rr) console.log(`  ${year}: ${run.rs.name}: ${usd(run.state.lastValue)} (${pct(run.state.lastValue / o.capital - 1)})`);
   }
-  const done = rows.map((row) => finishWeek(row, trades));
-  return { weeks: done, trades, candidates, state, notes, interest, spyStart };
+  return rr.map((run) => ({
+    weeks: run.rows.map((row) => finishWeek(row, run.trades)),
+    trades: run.trades,
+    candidates: run.candidates,
+    state: run.state,
+    notes: run.notes,
+    interest: run.interest,
+    spyStart,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +448,30 @@ export async function backtestCmd() {
   console.log(`Backtest ${rs.name} (from rules ${rs.basedOn}), ${o.from} to ${o.to}, ${usd(o.capital)}, margin to ${o.maxLeverage}x, fees $${o.fees}/contract, interest ${o.interest ? `T-bill, margin +${(o.marginSpread * 100).toFixed(1)}%` : "off"}`);
   const t0 = Date.now();
   const out = await simulate(feed, skynetImpl(rs, { fees: o.fees, maxLeverage: o.maxLeverage }), rs, o);
+  writeRun(feed, rs, o, out, t0);
+}
+
+/**
+ * Sweep: several variants through the same weeks in one process (chains loaded once per year), each written as its
+ * own run. A job file is JSON: [{ "ruleset": "kindred", "name": "Kindred · CC 50%", "set": ["levers.ccCoverage=0.5"] }].
+ *
+ *   npm run skynet -- sweep --jobs jobs.json [--from --to --symbols ...]
+ */
+export async function sweepCmd() {
+  const file = opt("jobs");
+  if (!file) throw new Error("sweep needs --jobs <file.json>");
+  const jobs = JSON.parse(readFileSync(file, "utf8")) as { ruleset?: string; name?: string; set?: string[] }[];
+  const rss = jobs.map((j) => withOverrides(getRuleset(j.ruleset ?? "kindred"), j.set ?? [], j.name));
+  const { feed, o } = await setup("2018-01-01", "2025-12-31");
+  console.log(`Sweep of ${rss.length} rulesets, ${o.from} to ${o.to}:\n${rss.map((r) => `  ${r.name}`).join("\n")}`);
+  const t0 = Date.now();
+  const eo = { fees: o.fees, maxLeverage: o.maxLeverage };
+  const outs = await simulateMany(feed, rss.map((rs) => ({ impl: skynetImpl(rs, eo), rs })), o);
+  for (const [i, rs] of rss.entries()) writeRun(feed, rs, o, outs[i], t0, true);
+  console.log(`Sweep done: ${rss.length} runs in ${Math.round((Date.now() - t0) / 1000)}s`);
+}
+
+function writeRun(feed: Feed, rs: Ruleset, o: SimOptions, out: RunOutput, t0: number, brief = false) {
   if (!out.weeks.length) throw new Error("no weeks were run");
 
   const closes: Record<string, number> = {};
@@ -430,13 +500,15 @@ export async function backtestCmd() {
     sharpe: sd > 0 ? (m / sd) * Math.sqrt(52) : null,
   };
 
+  if (!brief) {
   console.log("");
   printYears(rs.name, years, total);
   console.log(`\nInterest ${usd(out.interest)}; ${out.state.lots.length} share lots and ${out.state.options.length} options still open at the end (marked at the last close).`);
   console.log("SPY is price only (no dividends), and so are the wheel's shares; the wheel's cash earns the T-bill unless --no-interest.");
   for (const n of out.notes) console.log(`  ${n}`);
+  }
 
-  const id = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
+  const id = new Date(t0).toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
   const dir = join(DATA_DIR, "backtests", rs.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""), `${o.from}_${o.to}_${id}`);
   mkdirSync(dir, { recursive: true });
   const run: RunFile = {
@@ -460,7 +532,7 @@ export async function backtestCmd() {
   writeFileSync(join(dir, "trades.csv"), csv(out.trades));
   writeFileSync(join(dir, "graded.csv"), csv(graded.map(({ hold, ...g }) => ({ ...g, hold_close: hold?.close ?? null, hold_score: hold?.score ?? null, hold_edge: hold?.edge ?? null }))));
   writeFileSync(join(dir, "years.csv"), csv(years));
-  console.log(`\nWrote ${dir} (${Math.round((Date.now() - t0) / 1000)}s)`);
+  console.log(`${brief ? `${rs.name}: CAGR ${pct(total.cagr)}, max DD ${pct(total.dd)}, Sharpe ${total.sharpe?.toFixed(2)}. ` : "\n"}Wrote ${dir} (${Math.round((Date.now() - t0) / 1000)}s)`);
 }
 
 /**

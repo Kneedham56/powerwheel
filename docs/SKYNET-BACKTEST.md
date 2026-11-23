@@ -60,6 +60,25 @@ Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rules
 | `levers.avoidAssignment=true` | Friday: an in-the-money put is bought back at intrinsic + $0.05 instead of assigned. There are no Friday quotes, so that price stands in for the fill. |
 | `levers.ccCoverage=0.5` | Covered calls on this share of each lot's contracts, rounded down. |
 | `levers.ivMin` / `levers.ivMax` | Puts only on names whose 30-day ATM IV is at least / at most this. |
+| `levers.putStrike=delta` + `levers.deltaTarget=0.2` | Monday puts take the highest strike under the price whose \|delta\| is at most the target and that pays `minWeekly`. |
+| `levers.minScore=60` | Skip candidates scoring under this. |
+| `levers.noLeveraged=true` | No puts on leveraged or inverse ETFs (`LEVERAGED` in `skynet/engine.ts`). |
+| `levers.shareStop=0.2` | Stop out shares at this loss from cost instead of the floor stop. |
+| `levers.stopBuffer=0.03` | The floor stop fires only this far under the floor. |
+| `levers.wedRedeploy=false` | No new puts on Wednesday; take profit and stops still run. |
+| `levers.spyMaDays=200` (+ `levers.spyMaBand=0.04`) | Risk-off while SPY's last close is under its N-day average (or under it by more than the band). Read from the close before each run. |
+| `levers.vixMax=30` | Risk-off while VIX closed above this. |
+| `levers.riskOffScale=0.5` | When risk-off, the day's put exposure target is multiplied by this (default 0: no new puts). |
+| `levers.riskOffExit=all` / `losers` | Monday when risk-off: sell every share lot, or only those under cost. |
+| `levers.core=1` (+ `levers.coreSymbol=QQQ`) | Core holding: after Monday's puts, buy SPY (or QQQ) until total exposure is this multiple of the account; all of it is sold when risk-off. Puts come first: the core doesn't count toward their target, only toward the 2x margin cap. It's never covered or stopped. |
+
+### Sweeps
+
+`npm run skynet -- sweep --jobs jobs.json [--from --to --symbols --fees ...]` runs several variants through the same weeks in one process. Each year's chains load once and each Sunday report is built once per distinct `rules`, so a dozen variants take about as long as one run. Every variant keeps its own state and is written as its own run, with the same results as running it alone. The job file is a JSON array:
+
+```json
+[{ "ruleset": "kindred", "name": "Kindred · CC 50%", "set": ["levers.ccCoverage=0.5"] }]
+```
 
 Each run also writes `summary.json`, the headline numbers that the /skynet compare table reads. The table puts every run on the same period and symbol count side by side, best CAGR first, with each year green or red against the plain Kindred run.
 

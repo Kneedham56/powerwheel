@@ -677,6 +677,7 @@ async function main() {
   if (cmd === "backtest") return (await import("./backtest")).backtestCmd();
   if (cmd === "parity") return (await import("./backtest")).parityCmd();
   if (cmd === "cache") return (await import("./backtest")).cacheCmd();
+  if (cmd === "sweep") return (await import("./backtest")).sweepCmd();
   if (cmd === "sectors") return (await import("./sectors")).sectorsCmd();
   if (cmd === "priority") return priority();
   if (cmd === "bars") return bars();
