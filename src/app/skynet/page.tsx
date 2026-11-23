@@ -6,6 +6,8 @@ import { Expandable, PageTitle, Stat, param } from "@/components/ui";
 import type { WeekRow as WeekRowData } from "@/lib/race";
 import { dayLabel } from "@/lib/rules";
 import { listRuns, listSummaries, loadRun } from "@/lib/skynet-runs";
+import { Study, Tabs } from "./Study";
+import { loadStudy } from "@/lib/skynet-study";
 import type { RunFile, RunSummary, YearRow } from "../../../skynet/results";
 
 // Private and local only: backtest results are read from data/backtests on this machine (gitignored).
@@ -43,6 +45,23 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
       </div>
     );
   }
+  const { study, error: studyError } = loadStudy();
+  const view = param(sp, "view") ?? (study && !param(sp, "run") ? "study" : "runs");
+  const tabs = <Tabs view={view} />;
+  if (view === "study") {
+    return (
+      <div className="space-y-6">
+        <PageTitle right={tabs}>Skynet backtests</PageTitle>
+        {study ? (
+          <Study study={study} runs={runs} />
+        ) : (
+          <div className="card text-sm text-muted">
+            {studyError ?? "No study list yet. The research chats keep one in data/skynet/study.json (local, gitignored): the runs worth reading, and why."}
+          </div>
+        )}
+      </div>
+    );
+  }
   const id = param(sp, "run") ?? runs[0].id;
   const { run, error } = loadRun(id, runs);
   const picker = (
@@ -61,7 +80,16 @@ export default async function SkynetPage({ searchParams }: PageProps<"/skynet">)
   }
   return (
     <div className="space-y-6">
-      <PageTitle right={picker}>Skynet backtests</PageTitle>
+      <PageTitle
+        right={
+          <div className="flex flex-wrap items-center gap-3">
+            {tabs}
+            {picker}
+          </div>
+        }
+      >
+        Skynet backtests
+      </PageTitle>
       <Compare runs={listSummaries(runs)} current={id} />
       <Summary run={run} />
       <section className="card">
@@ -142,7 +170,7 @@ function Compare({ runs, current }: { runs: (RunSummary & { id: string })[]; cur
             return (
               <tr key={r.id} className={`border-b border-border/60 ${r.id === current ? "bg-accent/10" : "hover:bg-foreground/5"}`}>
                 <td className="py-1.5 text-left">
-                  <Link href={`/skynet?run=${encodeURIComponent(r.id)}`} className={r.id === current ? "font-semibold" : "hover:underline"}>
+                  <Link href={`/skynet?view=runs&run=${encodeURIComponent(r.id)}`} className={r.id === current ? "font-semibold" : "hover:underline"}>
                     {r.name}
                   </Link>
                 </td>
