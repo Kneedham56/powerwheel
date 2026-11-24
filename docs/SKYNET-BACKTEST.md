@@ -51,6 +51,10 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - **Nasus** is Kindred plus three changes: no new puts while SPY is under its 175-day average, covered calls on 25% of each lot, and take profit at 70%.
 - **Azir** is Nasus with a reworked Sunday report. Every qualifying trend stage scores 20, premium weighs 30, and there are up to 10 bonus points each for distance above the 200-day, 13-week strength against SPY, and IV ÷ realized vol.
 - **Veigar** is Azir with a volatility limit on the Sunday report: no name whose 60-day realized volatility is above 80% a year (`levers.prep.filters={"rv60":[null,0.8]}`; names with under 3 months of bars have no rv60 and are left out too). It bites mostly in wild markets (about 10% of candidates in 2020, 18% in 2025, almost none in 2018–19). Pooled over 11 universes it gives up about 2%/yr of Azir's return for a smaller worst year and drawdown, but on the full list alone it trails both Nasus and Azir, so it's a record of the round rather than a recommendation. The adaptive reports below (blend, switch, crash guard) were tried for it and did no better than a random switch.
+- **Talon** trades shares only, no options: Azir's report names at RSI ≤ 40, sold at RSI ≥ 70, a stop 1 ATR under the 20-day low, or 28 days (`levers.swing`). Pooled it makes about what SPY does.
+- **Zed** is Azir with no covered calls plus a 0.3x Talon swing book.
+- **Braum** is buy and hold, no options (`levers.hold`): all the cash in 10 stocks ranked by steady up weeks plus 12-month momentum, an equal share each. Once a quarter a holding that has fallen out of the top 30 is sold, and the money buys the best stock not held. Nothing else sells.
+- **Ornn** is Braum's book on the cash (1x) with Azir's wheel on the margin above it (up to the 2x cap).
 
 ## Variants and levers
 
@@ -101,6 +105,24 @@ Decisions happen on the run days at the close. Between them, resting orders play
 | `midweekExit` | Wheel + swing: Wednesday, a covered swing lot that is stretched or hot (stretchAtr / rsiExit) is sold and its call bought back. |
 
 `data/skynet/tools/swingstats.js <run dir prefix>` lists a run's swing trades: count, win rate, average return, days held, why they closed, P&L by year.
+
+### Buy-and-hold levers (`levers.hold`, skynet/hold.ts)
+
+The cash goes into the best-ranked names and stays there: a holding is sold only when the money is wanted for a better name. Alone (`mode: "only"`, no options) or with the wheel on the margin above it (`mode: "add"`). One JSON object, so it goes in a job file (`"levers.hold={...}"`).
+
+Every week the names are ranked on bars through Friday's close, and the book acts at Monday's close (each fill pays `slip`, default 0.05%). The first week it buys the top `maxNames`, an equal share each. On each review week after that, a holding that has dropped out of the top `keep` is sold, and its money buys the best name not held. That's the only sell: no stop, no target, no trimming of winners, so position sizes drift with the winners. A held name that stops trading (no bar for 10 days: delisted or bought out) is sold at its last price. Spare money (interest, the wheel's premium) is put to work on review weeks once it's 2%+ of the account.
+
+Beside the wheel, hold lots carry the theme `hold`: no covered calls, no floor stop or downtrend sale, and they don't use the wheel's theme caps. Like the core holding, they count toward the account's 2x margin cap but not toward the wheel's exposure targets, so with `exposure: 1` the wheel's puts get the margin above 1x. A hold lot and a wheel lot can be the same stock (the per-ticker cap counts both).
+
+| Field | What it does |
+|---|---|
+| `mode`, `exposure`, `maxNames` | `only` or `add`; the book's size as a multiple of the account value (1 = all the cash); how many names. |
+| `rank` | Best first, or `-x` for lowest first. A list averages the ranks. Features (on daily closes): `mom12` (t−252 → t−21, the classic momentum factor), `mom6`, `ret12`, `ret6`, `ret3`, `vs200`, `offHigh`, `rs13` (13 weeks vs SPY), `vol` (a year of daily returns, annualised), `sharpe12` (ret12 ÷ vol), `smooth` (share of up weeks in a year), `dd12` (the year's worst drawdown), `price`, `days`; placebos `rand` (new every week) and `fixed` (one per name, never changes). |
+| `keep`, `review` | Sell a holding once it ranks below `keep` (default 3 × maxNames; a huge number = never sell). Review `weekly`, `monthly` (default, the first week of each month), `quarterly` or `yearly`. |
+| `filters`, `universe` | Each feature within [min, max]. `all` (default), `stocks`, `funds`, or a fixed list (`["SPY"]` is SPY buy and hold, the benchmark). |
+| `noLeveraged`, `bigOnly` | Leave out leveraged and inverse ETFs (default yes); only names passing the report's size test, 20-day dollar volume of $100M+ (default yes; funds always pass). |
+| `regime` | Sell the book on a Monday when the ruleset's market gate (`spyMaDays`, `vixMax`) is off, and buy back once it's on. Off by default (Buffett doesn't time). |
+| `weight`, `minTrade`, `slip` | `equal` (default) or `rank` (best-ranked get more); spare money under this share of the account waits (default 0.02); cost per share fill. |
 
 ### Sunday-report levers
 

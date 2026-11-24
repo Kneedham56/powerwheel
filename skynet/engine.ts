@@ -35,6 +35,7 @@ import {
 import { daysTo, midOf, rel, type Bar, type OptionQuote } from "../src/lib/rules";
 import { inNeverSellZone, realMarket, stage, techAt, trendQualifies } from "./logic";
 import type { Ruleset } from "./rulesets";
+import { HOLD, holdOf, holdStep, type HoldInput } from "./hold";
 import { adoptLot, inBuyZone, isSwingLot, swingCallFloor, swingEnter, swingHot, swingOf, swingWalk, type SwingInput } from "./swing";
 
 export interface EngineOptions {
@@ -63,6 +64,13 @@ export interface Regime {
 
 /** The theme of the core holding (levers.core): never covered, never stopped, sold only when risk-off. */
 export const CORE = "core";
+
+/** A book lot (the core holding or levers.hold): outside the wheel. No covered calls, no stops, no downtrend sale, and it
+ * counts toward the margin cap but not the wheel's exposure targets. */
+const isBook = (l: Lot) => l.theme === CORE || l.theme === HOLD;
+
+/** Options off: swing or buy and hold alone. */
+const noOptions = (rs: Ruleset) => swingOf(rs)?.mode === "only" || holdOf(rs)?.mode === "only";
 
 /** Share of the exposure target new puts may use: 1, or `riskOffScale` when a regime lever says risk-off. */
 export function regimeScale(rs: Ruleset, g?: Regime): number {
@@ -210,9 +218,9 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
     const per = k * 100;
     const tickerRoom = A.perTicker * v - nameExposure(s, c.symbol, spots);
     const themeRoom = A.perTheme * v - themeExposure(s, c.theme, spots);
-    // the core holding (levers.core) gives way to puts: it doesn't count toward the target, only toward the margin cap
+    // the core holding (levers.core) and the hold book (levers.hold) don't count toward the target, only toward the margin cap
     const all = exposure(s, spots);
-    const core = s.lots.filter((l) => l.theme === CORE).reduce((x, l) => x + l.shares * (spots[l.symbol] ?? l.mark), 0);
+    const core = s.lots.filter(isBook).reduce((x, l) => x + l.shares * (spots[l.symbol] ?? l.mark), 0);
     const totalRoom = Math.min(Math.min(exposureTarget, A.exposure.ceiling) * v - (all - core), o.maxLeverage * v - all);
     let n = Math.floor(Math.min(tickerRoom, themeRoom, totalRoom) / per + 1e-9);
     if (n < 1 && nameExposure(s, c.symbol, spots) === 0 && per <= A.oneContract * v && per <= themeRoom && per <= totalRoom) n = 1;
@@ -246,7 +254,7 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
 function sellCalls(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, quotes: QuoteBook, minStrike: Record<string, number>, date: string, expiry: string) {
   const CC = rs.ai.coveredCall;
   for (const l of s.lots) {
-    if (l.theme === CORE || (isSwingLot(l) && !swingOf(rs)?.calls)) continue;
+    if (isBook(l) || (isSwingLot(l) && !swingOf(rs)?.calls)) continue;
     const cover = isSwingLot(l) ? (swingOf(rs)?.callCoverage ?? rs.levers?.ccCoverage ?? 1) : (rs.levers?.ccCoverage ?? 1);
     const n = Math.floor(Math.floor(l.shares / 100) * cover + 1e-9);
     if (n < 1 || s.options.some((x) => x.type === "call" && x.symbol === l.symbol)) continue;
@@ -314,16 +322,16 @@ function adjustCore(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, spot
   }
 }
 
-export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput }, g?: Regime): RunResult {
+export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput }, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
   for (const l of s.lots) if (inp.spots[l.symbol] !== undefined) l.mark = inp.spots[l.symbol];
-  const only = swingOf(rs)?.mode === "only";
+  const only = noOptions(rs);
   swingWalk(rs, s, L, "monday", inp.date, inp.spots, inp.swing);
 
   for (const l of [...s.lots]) {
-    if (l.theme === CORE || isSwingLot(l)) continue;
+    if (isBook(l) || isSwingLot(l)) continue;
     const c = inp.candidates.find((x) => x.symbol === l.symbol);
     l.downtrendWeeks = c?.stage === "Downtrend" ? (l.downtrendWeeks ?? 0) + 1 : 0;
     if (l.downtrendWeeks >= 2 && !rs.levers?.holdUntilGreen) sellLot(rs, o, s, L, l, l.mark, "Downtrend two Sundays in a row", inp.quotes.calls);
@@ -331,13 +339,16 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
 
   const exit = rs.levers?.riskOffExit;
   if (exit && regimeScale(rs, g) < 1)
-    for (const l of [...s.lots]) if (l.theme !== CORE && !isSwingLot(l) && (exit === "all" || l.mark < l.cost)) sellLot(rs, o, s, L, l, l.mark, "Risk-off: out of the shares", inp.quotes.calls);
+    for (const l of [...s.lots]) if (!isBook(l) && !isSwingLot(l) && (exit === "all" || l.mark < l.cost)) sellLot(rs, o, s, L, l, l.mark, "Risk-off: out of the shares", inp.quotes.calls);
 
   const minStrike: Record<string, number> = {};
   for (const l of s.lots) {
+    if (isBook(l)) continue;
     const c = inp.candidates.find((x) => x.symbol === l.symbol);
     minStrike[l.symbol] = isSwingLot(l) ? swingCallFloor(rs, l) : Math.max(l.cost, l.mark + rs.ai.coveredCall.moves * (c?.exp_move ?? l.mark * 0.03));
   }
+  // levers.hold: the book takes the cash first; the wheel's puts get the margin above it
+  holdStep(rs, o.maxLeverage, s, L, inp.date, inp.hold, LEVERAGED);
   if (rs.ai.coveredCall.use && !only) sellCalls(rs, o, s, L, inp.quotes.calls, minStrike, inp.date, inp.expiry);
   const value = accountValue(s, inp.spots);
   if (!only) sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday * regimeScale(rs, g), "monday");
@@ -397,7 +408,7 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
   if (rs.ai.stopBelowFloor && !rs.levers?.holdUntilGreen) {
     for (const l of [...s.lots]) {
       // swing lots keep their own stop, except while a covered call is open (the swing walk leaves those alone)
-      if (l.theme === CORE || (isSwingLot(l) && !covered.has(l.symbol)) || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
+      if (isBook(l) || (isSwingLot(l) && !covered.has(l.symbol)) || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const bars = inp.bars[l.symbol];
       const floor = stopFloor(rs, bars);
       const close = bars?.at(-1)?.close;
@@ -405,7 +416,7 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
     }
   }
 
-  if (rs.levers?.wedRedeploy !== false && swingOf(rs)?.mode !== "only") sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday * regimeScale(rs, g), "wednesday");
+  if (rs.levers?.wedRedeploy !== false && !noOptions(rs)) sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday * regimeScale(rs, g), "wednesday");
   swingEnter(rs, o.maxLeverage, s, L, "wednesday", inp.date, ranked(rs, inp.candidates), inp.spots, inp.swing);
   s.lastRun = { kind: "wednesday", at: inp.date, week: s.week };
   return { state: s, trades: L.trades, report: [] };
@@ -540,7 +551,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
     } else if (c > x.strike) {
       let left = 100 * x.contracts;
       let gain = 0;
-      for (const l of s.lots.filter((y) => y.symbol === x.symbol).sort((a, b) => Number(a.theme === CORE) - Number(b.theme === CORE))) {
+      for (const l of s.lots.filter((y) => y.symbol === x.symbol).sort((a, b) => Number(isBook(a)) - Number(isBook(b)))) {
         const take = Math.min(left, l.shares);
         gain += (x.strike - l.cost) * take;
         l.shares -= take;
@@ -563,7 +574,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
   }
   if (rs.ai.stopBelowFloor && !rs.levers?.holdUntilGreen && inp.bars) {
     for (const l of [...s.lots]) {
-      if (l.theme === CORE || (isSwingLot(l) && !s.options.some((x) => x.type === "call" && x.symbol === l.symbol)) || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
+      if (isBook(l) || (isSwingLot(l) && !s.options.some((x) => x.type === "call" && x.symbol === l.symbol)) || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const floor = stopFloor(rs, inp.bars[l.symbol]);
       const close = inp.closes[l.symbol];
       if (stopHit(rs, l, close, floor)) sellLot(rs, o, s, L, l, close!, stopWhy(rs, l, close!, floor));

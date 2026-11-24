@@ -43,7 +43,7 @@ The state of each phase is kept in the journal (below), not here. This file only
 6. **New strategies**, each a new champion. In order:
    - swing trading (no options): Talon (built, `levers.swing`)
    - the wheel + swing: Zed (built)
-   - buy and hold
+   - buy and hold: Braum (built, `levers.hold`), and buy and hold + the wheel on the margin: Ornn (built)
    - long calls/puts
    - the wheel + long options
 

@@ -163,6 +163,13 @@ const LABELS: [RegExp, string][] = [
   [/^levers\.swing\.maxDays$/, "Swing sell: after this many days"],
   [/^levers\.swing\.adoptAssigned$/, "Wheel + swing: assigned shares are run by the swing exits"],
   [/^levers\.swing\.(.+)$/, "Swing: $1"],
+  [/^levers\.hold\.mode$/, "Buy and hold: “only” = shares only, no options; “add” = the wheel on the margin above it"],
+  [/^levers\.hold\.exposure$/, "Buy and hold: the book's size (1 = all the cash)"],
+  [/^levers\.hold\.maxNames$/, "Buy and hold: how many names"],
+  [/^levers\.hold\.rank$/, "Buy and hold: what “best” means (the ranking)"],
+  [/^levers\.hold\.keep$/, "Buy and hold: sell a holding only once it ranks below this (a better name takes the money)"],
+  [/^levers\.hold\.review$/, "Buy and hold: how often it looks for better names"],
+  [/^levers\.hold\.(.+)$/, "Buy and hold: $1"],
 ];
 
 function flat(o: unknown, pre = "", out: Record<string, unknown> = {}) {
@@ -178,7 +185,9 @@ const show = (path: string, v: unknown) => {
   if (typeof v === "number" && /ccCoverage|takeProfit|swing\.perName/.test(path)) return `${Math.round(v * 100)}%`;
   if (Array.isArray(v) && v.length === 2 && path.includes("swing.filters.")) return `${v[0] ?? "…"} to ${v[1] ?? "…"}`;
   if (Array.isArray(v) && path.endsWith("swing.entryDays")) return v.map((d) => String(d).slice(0, 3)).join(", ");
-  if (typeof v === "boolean" && /coveredCall\.use|swing\./.test(path)) return v ? "yes" : "no";
+  if (typeof v === "boolean" && /coveredCall\.use|swing\.|hold\./.test(path)) return v ? "yes" : "no";
+  if (path.endsWith("hold.rank")) return Array.isArray(v) ? v.join(" + ") : String(v);
+  if (typeof v === "number" && path.endsWith("hold.keep") && v > 1e6) return "never";
   if (typeof v === "number" && /spyMaDays/.test(path)) return `${v} days`;
   return Array.isArray(v) ? JSON.stringify(v) : String(v);
 };

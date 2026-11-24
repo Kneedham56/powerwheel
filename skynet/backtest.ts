@@ -42,6 +42,7 @@ import { friday, monday, ranked, regimeScale, wednesday, type EngineOptions, typ
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
+import { holdFeatures, isHoldLot, type HoldFeatures, type HoldInput } from "./hold";
 import type { SwingInput, SwingState } from "./swing";
 import { summarize, type RunFile, type RunOptions, type Totals, type YearRow } from "./results";
 import { loadSectors } from "./sectors";
@@ -76,7 +77,7 @@ interface SundayIn {
 interface Impl {
   label: string;
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
-  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput }, g?: Regime): RunResult;
+  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput }, g?: Regime): RunResult;
   wednesday(s: RaceState, inp: WednesdayInput & { swing?: SwingInput }, g?: Regime): RunResult;
   friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput }): RunResult;
 }
@@ -286,6 +287,30 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       return { bars, cands, riskOn: regimeScale(run.rs, g) >= 1 };
     };
 
+    // levers.hold: features for every tradable name on bars through Friday (once a week, shared), Monday's closes
+    let holdFeats: Record<string, HoldFeatures> | null = null;
+    let holdPx: Record<string, number> = {};
+    const holdIn = (run: Run): HoldInput | undefined => {
+      if (!run.rs.levers?.hold) return undefined;
+      if (!holdFeats) {
+        holdFeats = {};
+        for (const s of tradable) if (sundayBars[s]) holdFeats[s] = holdFeatures(s, sundayBars[s], sundayBars.SPY, w.entry);
+        holdPx = spotsOn(w.entry, tradable);
+      }
+      const m = Number(w.entry.slice(5, 7));
+      const monthly = w.entry.slice(0, 7) !== prev.entry.slice(0, 7);
+      return {
+        feats: holdFeats,
+        px: holdPx,
+        funds: funds.filter((f) => tradable.includes(f)),
+        big: tradable.filter((s) => meta[s]?.bigEnough),
+        stale: [...new Set(run.state.lots.filter(isHoldLot).map((l) => l.symbol))].filter((s) => !feed.barsAsOf(s, w.entry)),
+        riskOn: regimeScale(run.rs, gMon) >= 1,
+        first: i === first,
+        reviews: { weekly: true, monthly, quarterly: monthly && m % 3 === 1, yearly: monthly && m === 1 },
+      };
+    };
+
     for (const run of rr) {
       const cands = reports.get(run.key)!;
       if (keepCandidates) run.candidates.set(runDate, cands);
@@ -297,7 +322,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       // Monday
       splitCheck(run, w.entry);
       const monExpiry = targetExpiry(run.rs.rules, w.entry);
-      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands) }, gMon));
+      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run) }, gMon));
       remember(run, w.entry);
 
       // Wednesday (skipped in a week too short to have one between entry and expiry)
