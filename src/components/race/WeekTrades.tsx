@@ -3,9 +3,17 @@ import { money, pct, shortDate } from "@/lib/format";
 import type { Trade } from "@/lib/race";
 
 /**
- * A paper week's trades: by ticker, then one row per position (its sale netted against any buyback), with skipped
- * picks collapsed into one line. Shared by the AI race page and the Skynet backtest page so both read the same way.
+ * A paper week's trades: by ticker (or, for a backtest week, the shares held at Friday's close), then one row per
+ * position (its sale netted against any buyback), with skipped picks collapsed into one line. Shared by the AI race
+ * page and the Skynet backtest page so both read the same way.
  */
+
+/** Shares of a name held at a week's Friday close (Skynet runs record it per week). */
+export interface Holding {
+  symbol: string;
+  shares: number;
+  price: number;
+}
 
 const usd = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const px = (n: number | null | undefined) => (n === null || n === undefined ? "—" : n.toLocaleString("en-US", { maximumFractionDigits: 2 }));
@@ -40,6 +48,7 @@ function positionRows(trades: Trade[]): PositionRow[] {
   for (const [key, legs] of groups) {
     const opens = legs.filter((l) => OPENS.has(l.action));
     const buys = legs.filter((l) => l.action === "Bought back");
+    const sales = legs.filter((l) => l.action === "Sold shares");
     const first = opens[0] ?? legs[0];
     const qty = opens.reduce((a, l) => a + (l.qty ?? 0), 0) || (first.qty ?? 0);
     const wavg = (ls: Trade[]) => {
@@ -67,7 +76,7 @@ function positionRows(trades: Trade[]): PositionRow[] {
       type: first.type,
       qty,
       price: opens.length ? wavg(opens) : first.price,
-      closePrice: buys.length ? wavg(buys) : null,
+      closePrice: buys.length ? wavg(buys) : !isOption && sales.length && legs.some((l) => (l.action as string) === "Bought shares") ? wavg(sales) : null,
       net: isOption ? [...opens, ...buys].reduce((a, l) => a + (l.cash ?? 0), 0) : null,
       collateral: isOption && first.strike ? first.strike * 100 * qty : null,
       outcome,
@@ -77,17 +86,30 @@ function positionRows(trades: Trade[]): PositionRow[] {
   return rows.sort((a, b) => typeOrder(a.type) - typeOrder(b.type) || (b.net ?? 0) - (a.net ?? 0));
 }
 
-export function WeekTrades({ trades, title = "AI trades" }: { trades: Trade[]; title?: string }) {
+export function WeekTrades({ trades, title = "AI trades", holdings }: { trades: Trade[]; title?: string; holdings?: Holding[] | null }) {
   const rows = positionRows(trades);
   const skipped = [...new Set(trades.filter((t) => t.action === "Skipped" && t.symbol).map((t) => t.symbol as string))];
-  if (!rows.length && !skipped.length) return null;
+  if (!rows.length && !skipped.length && !holdings?.length) return null;
   const byTicker = new Map<string, number>();
   for (const r of rows) if (r.net !== null) byTicker.set(r.ticker, (byTicker.get(r.ticker) ?? 0) + r.net);
   const tickers = [...byTicker.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
   return (
     <div className="space-y-3">
       <div className="text-sm font-medium">{title}</div>
-      {tickers.length > 0 && (
+      {holdings ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          <span className="text-muted">Held at the Friday close:</span>
+          {holdings.length ? (
+            holdings.map((h) => (
+              <span key={h.symbol}>
+                <span className="font-medium">{h.symbol}</span> {px(h.shares)} <span className="text-muted">@</span> {money(h.price)}
+              </span>
+            ))
+          ) : (
+            <span className="text-muted">no shares</span>
+          )}
+        </div>
+      ) : tickers.length > 0 && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
           <span className="text-muted">By ticker:</span>
           {tickers.map(([t, v]) => (

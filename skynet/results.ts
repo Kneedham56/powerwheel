@@ -50,6 +50,16 @@ export interface Totals {
   sharpe: number | null;
 }
 
+/** A share position at a week's Friday close: every lot of the name added up, marked at that close. */
+export interface Holding {
+  symbol: string;
+  shares: number;
+  price: number;
+}
+
+/** A backtest week: the race's week row plus what the account held at the end of it (runs from before 2026-11-24 have none). */
+export type RunWeek = WeekRow & { holdings?: Holding[] };
+
 export interface RunFile {
   /** 2 = weeks, trades and graded trades are inside run.json */
   format: number;
@@ -61,7 +71,7 @@ export interface RunFile {
   years: YearRow[];
   notes: string[];
   interest: number;
-  weeks: WeekRow[];
+  weeks: RunWeek[];
   trades: Trade[];
   graded: GradedTrade[];
   end_state: RaceState;
