@@ -46,6 +46,7 @@ The state of each phase is kept in the journal (below), not here. This file only
    - buy and hold: Braum (built, `levers.hold`), and buy and hold + the wheel on the margin: Ornn (built)
    - long calls/puts: Jhin (built, `levers.longs`; calls only, since long puts lost in every form tried)
    - the wheel + long options: Xayah (built)
+   - longer-dated puts (21–45 DTE): Zilean (built, `levers.dte`)
 
    The data already includes calls. The ledger and the journal carry over, so earlier findings feed these.
 
@@ -137,7 +138,7 @@ Its top section always holds **current state**, **open questions** and **next up
 **Strike and expiry**
 - Expected-move distance (`ai.strike.moves`, 0.5–1.5), and the aggressive tilt (`aggressiveMoves`, `aggressiveMinScore`). Exists.
 - A delta target instead of the expected move (0.10–0.35). Built (`levers.putStrike: "delta"`).
-- Expiry: weekly (base), 2 weeks, or about 30–45 days and managed weekly. Code: positions span weeks.
+- Expiry: weekly (base), or N days out and managed weekly. Built (`levers.dte`, `dteStrike`, `dteClose`; Zilean).
 - Floor guard: ATR under the floor (`rules.strike.atrBelowFloor`). Exists.
 
 **Managing open puts**

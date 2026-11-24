@@ -30,6 +30,12 @@ const sq = (s: string) => `'${s.replace(/'/g, "''")}'`;
 export const CACHE = join(DATA_DIR, "cache");
 const C = (...parts: string[]) => join(CACHE, ...parts).replace(/\\/g, "/");
 export const CACHE_MAX_DAYS = 15;
+/**
+ * The long-chain cache (data/cache/chains-long, for `levers.dte`): puts only, expiring on a Thursday or Friday more than
+ * CACHE_MAX_DAYS and at most CACHE_LONG_DAYS out. It's kept apart from the normal chains, so runs without `levers.dte`
+ * (and the Sunday report's weeklies check) see exactly what they saw before. Build it with `npm run skynet -- cache --long`.
+ */
+export const CACHE_LONG_DAYS = 56;
 
 export const addDays = (s: string, n: number) => {
   const d = new Date(`${s}T12:00:00Z`);
@@ -293,14 +299,17 @@ export class Feed {
   }
 
   /** The chain query over the full store (also what the cache is built from). Dates come back as DATE. */
-  private chainSql(s: string, dayList: string, minDay: string, maxDay: string, maxDays: number) {
+  private chainSql(s: string, dayList: string, minDay: string, maxDay: string, maxDays: number, long = false) {
     const g = sq(P("option_greeks_eod", `${s}.parquet`));
     const oiFile = P("option_oi", `${s}.parquet`);
+    const window = long
+      ? `expiration > date + ${CACHE_MAX_DAYS} AND expiration <= date + ${Math.round(maxDays)} AND dayofweek(expiration) IN (4, 5) AND "right" = 'PUT'`
+      : `expiration >= date AND expiration <= date + ${Math.round(maxDays)}`;
     return `
         WITH q AS (
           SELECT date, expiration, strike, "right", bid, ask, delta, implied_vol, underlying_price
           FROM read_parquet(${g})
-          WHERE date IN (${dayList}) AND expiration >= date AND expiration <= date + ${Math.round(maxDays)}
+          WHERE date IN (${dayList}) AND ${window}
             AND underlying_price > 0
             AND (("right" = 'PUT' AND strike BETWEEN 0.5 * underlying_price AND 1.05 * underlying_price)
               OR ("right" = 'CALL' AND strike BETWEEN 0.95 * underlying_price AND 1.6 * underlying_price))
@@ -350,6 +359,73 @@ export class Feed {
     this.cacheMax = null;
   }
 
+  /** Build data/cache/chains-long (see CACHE_LONG_DAYS) for `symbols` on `days`. */
+  async buildLongCache(symbols: string[], days: string[], log: (s: string, i: number) => void = () => {}) {
+    mkdirSync(C("chains-long"), { recursive: true });
+    const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
+    const minDay = days.reduce((a, b) => (a < b ? a : b));
+    const maxDay = days.reduce((a, b) => (a > b ? a : b));
+    for (const [i, s] of symbols.entries()) {
+      if (!this.hasOptions(s)) continue;
+      try {
+        await this.con.run(`COPY (${this.chainSql(s, dayList, minDay, maxDay, CACHE_LONG_DAYS, true)} ORDER BY d, e, strike) TO ${sq(C("chains-long", `${s}.parquet`))} (FORMAT parquet)`);
+      } catch (e) {
+        // a running pull can be rewriting the file: skip it, `--missing` fills it in later
+        console.log(`  ${s}: skipped (${String((e as Error).message).split(/\r?\n/)[0]})`);
+      }
+      log(s, i);
+    }
+    writeFileSync(C("manifest-long.json"), JSON.stringify({ built: new Date().toISOString(), minDays: CACHE_MAX_DAYS + 1, maxDays: CACHE_LONG_DAYS, symbols: symbols.length, from: minDay, to: maxDay }, null, 1));
+  }
+
+  private longChains = new Map<string, DayChains>(); // date → long puts (levers.dte)
+
+  /**
+   * Load long-dated puts (see CACHE_LONG_DAYS) for `symbols` on `days`, expiring at most `maxDays` out, into their own
+   * map: `chain()` never returns them; `longPuts()` does.
+   */
+  async loadLongChains(symbols: string[], days: string[], maxDays: number) {
+    if (!days.length) return;
+    if (maxDays > CACHE_LONG_DAYS) throw new Error(`levers.dte needs expiries up to ${maxDays} days out; the long chains stop at ${CACHE_LONG_DAYS}`);
+    const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
+    const minDay = days.reduce((a, b) => (a < b ? a : b));
+    const maxDay = days.reduce((a, b) => (a > b ? a : b));
+    const fromCache = this.useCache && existsSync(C("manifest-long.json"));
+    for (const s of symbols) {
+      if (!this.hasOptions(s)) continue;
+      // with a long cache, a symbol it lacks (its store file was unreadable when it was built) simply has no long puts
+      if (fromCache && !existsSync(C("chains-long", `${s}.parquet`))) continue;
+      const inner =
+        fromCache
+          ? `SELECT * FROM read_parquet(${sq(C("chains-long", `${s}.parquet`))}) WHERE d IN (${dayList}) AND e <= d + ${Math.round(maxDays)}`
+          : this.chainSql(s, dayList, minDay, maxDay, maxDays, true);
+      const sql = `SELECT strftime(d, '%Y-%m-%d') d, strftime(e, '%Y-%m-%d') e, strike, bid, ask, delta, iv, oi FROM (${inner})`;
+      const rows = await this.rows<{ d: string; e: string; strike: number; bid: number | null; ask: number | null; delta: number | null; iv: number | null; oi: number | string | null }>(sql);
+      for (const r of rows) {
+        let day = this.longChains.get(r.d);
+        if (!day) this.longChains.set(r.d, (day = new Map()));
+        let list = day.get(s);
+        if (!list) day.set(s, (list = []));
+        list.push({
+          right: "put",
+          strike: Number(r.strike),
+          expiry: r.e,
+          bid: r.bid === null ? null : Number(r.bid),
+          ask: r.ask === null ? null : Number(r.ask),
+          mark: null,
+          delta: r.delta === null ? null : Number(r.delta),
+          iv: r.iv === null ? null : Number(r.iv),
+          openInterest: r.oi === null ? null : Number(r.oi),
+        });
+      }
+    }
+  }
+
+  /** Every put on `date` for `sym`: the normal chain's (any expiry in its window) plus the long chain's. */
+  allPuts(sym: string, date: string): OptionQuote[] {
+    return [...this.chain(sym, date).filter((c) => c.right === "put"), ...(this.longChains.get(date)?.get(sym) ?? [])].map(({ strike, expiry, bid, ask, mark, delta, iv, openInterest }) => ({ strike, expiry, bid, ask, mark, delta, iv, openInterest }));
+  }
+
   async loadChains(symbols: string[], days: string[], maxDays: number) {
     if (!days.length) return;
     const dayList = days.map((d) => `DATE ${sq(d)}`).join(", ");
@@ -390,6 +466,7 @@ export class Feed {
   /** Drop chains before `date`, to keep memory flat over a long run. */
   dropChainsBefore(date: string) {
     for (const d of [...this.chains.keys()]) if (d < date) this.chains.delete(d);
+    for (const d of [...this.longChains.keys()]) if (d < date) this.longChains.delete(d);
   }
 
   chain(sym: string, date: string): Contract[] {

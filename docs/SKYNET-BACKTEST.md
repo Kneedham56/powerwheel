@@ -18,6 +18,7 @@ npm run skynet -- sectors                                         # data/sectors
 npm run skynet -- picks --ruleset nasus [--set ...]               # pick study: every Sunday candidate and its put's outcome
 npm run skynet -- regime                                          # the adaptive report's regime features for every Sunday
 npm run skynet -- longs-study --ruleset azir                      # long-option study: what buying each name's weekly call and put paid
+npm run skynet -- cache [--long] [--missing]                      # data/cache (--long: the long-dated puts levers.dte needs)
 ```
 
 - The backtest reads Parquet through an in-memory DuckDB, so it runs while a pull holds `data/skynet.duckdb`.
@@ -58,8 +59,7 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - **Ornn** is Braum's book on the cash (1x) with Azir's wheel on the margin above it (up to the 2x cap).
 - **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
 - **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
-- **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
-- **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
+- **Zilean** is Azir with longer-dated puts (`levers.dte`): the Thursday/Friday expiry nearest 45 days out, the strike at 0.30 delta, bought back on the Wednesday with 21 days or fewer left. Lower drawdowns than Azir, lower return. It needs the long chains: `npm run skynet -- cache --long`.
 
 ## Variants and levers
 
@@ -86,6 +86,9 @@ Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rules
 | `levers.riskOffExit=all` / `losers` | Monday when risk-off: sell every share lot, or only those under cost. |
 | `levers.fridayDecide=true` | Kyle's Friday rule, at the close, for a put in the money: take assignment if the stock still passes Sunday's checks (trend qualifies, not in the never-sell zone, at or above its 20-day low); otherwise roll to next week's expiry at the lowest strike, at or under this one, that still nets a credit (a cent a share or more after the buyback); otherwise buy it back. `=floor` takes assignment whenever the stock is at or above its 20-day low (no trend check). Reads Friday's closing chain. |
 | `levers.fridayRollCalls=true` | Friday, for a covered call in the money: if the stock passes the same checks, roll to next week at the highest strike, at or over this one and the cost, that still nets a credit; otherwise let it be called away. |
+| `levers.dte=30` | Longer-dated puts (Zilean): Monday's and Wednesday's puts go on the Thursday/Friday expiry nearest 30 days out (within ±10) instead of this Friday. A name holds one put at a time, so its open put blocks new ones until it's closed or settled; Wednesday's take-profit and floor cut check it every week. The minimum stays per week (`ai.minWeekly` × the weeks the option spans, rounded up). Covered calls stay weekly. Open options are marked to market each Friday (mid, else intrinsic), which plain runs don't need. Reads the long chains in `data/cache/chains-long` (`cache --long`: puts only, 16–56 days out, Thursday/Friday expiries), kept apart so the Sunday report's weeklies check doesn't change. |
+| `levers.dteStrike=weekly` | With `dte`: Azir's strike as is (one weekly expected move under). The default, `scaled`, goes `ai.strike.moves` moves for the option's own life (the weekly move × √((days + 1) ÷ 5)), about the weekly put's chance of assignment. `putStrike=delta` also works on Monday. |
+| `levers.dteClose=21` | With `dte`: on Wednesday, buy back any put with this many days or fewer left (one expiring that week is left to settle). |
 | `levers.core=1` (+ `levers.coreSymbol=QQQ`) | Core holding: after Monday's puts, buy SPY (or QQQ) until total exposure is this multiple of the account; all of it is sold when risk-off. Puts come first: the core doesn't count toward their target, only toward the 2x margin cap. It's never covered or stopped. |
 
 ### Swing levers (`levers.swing`, skynet/swing.ts)

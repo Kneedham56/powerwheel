@@ -17,7 +17,7 @@
  * Results go to data/backtests/<ruleset>/<run id>/ (gitignored): run.json (what the /skynet page reads: totals, years,
  * weeks, trades), plus weeks.csv, trades.csv, graded.csv and years.csv for spreadsheets.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildSunday, emptyNarrative, type CandidateRow } from "../src/lib/prep";
 import {
@@ -37,7 +37,7 @@ import {
   type WednesdayInput,
   type WeekRow,
 } from "../src/lib/race";
-import { AI, FUNDS, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../src/lib/rules";
+import { AI, FUNDS, midOf, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../src/lib/rules";
 import { friday, monday, ranked, regimeScale, wednesday, type EngineOptions, type FridayDecideInput, type Regime } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
@@ -80,7 +80,7 @@ interface Impl {
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
   monday(s: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput }, g?: Regime): RunResult;
   wednesday(s: RaceState, inp: WednesdayInput & { swing?: SwingInput; longs?: LongMidInput }, g?: Regime): RunResult;
-  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput }): RunResult;
+  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number> }): RunResult;
 }
 
 function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
@@ -184,6 +184,8 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
 
   // the Sunday report reads Friday's chain for next Friday (7 days out); 2+ expiries in this window = weeklies
   const maxDays = Math.max(...rules.map((R) => R.pick.minExpiryDays)) + 11;
+  // levers.dte: long-dated puts, loaded beside the normal chains for runs that sell them
+  const longDays = Math.max(0, ...rr.map((r) => (r.rs.levers?.dte ? r.rs.levers.dte + 11 : 0)));
   let loadedYear = "";
   for (let i = first; i < weeks.length; i++) {
     const w = weeks[i];
@@ -204,6 +206,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       if (!o.quiet) process.stdout.write(`  ${year}: loading chains for ${tradable.length} symbols, ${days.size} days... `);
       const t0 = Date.now();
       await feed.loadChains(tradable, [...days], maxDays);
+      if (longDays) await feed.loadLongChains(tradable, [...days], longDays);
       if (!o.quiet) console.log(`${((Date.now() - t0) / 1000).toFixed(1)}s`);
       loadedYear = year;
     }
@@ -258,6 +261,25 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
     }
 
     const putBooks = new Map<string, QuoteBook>();
+    // levers.dte: every put expiry per name (the engine picks one for new sales; open puts find their own)
+    const allBooks = new Map<string, QuoteBook>();
+    const allPuts = (date: string) => {
+      if (!allBooks.has(date)) allBooks.set(date, Object.fromEntries(tradable.filter((s) => feed.chain(s, date).length).map((s) => [s, feed.allPuts(s, date)])));
+      return allBooks.get(date)!;
+    };
+    // levers.dte: Friday's value per share of each open option (mid; intrinsic without a quote)
+    const marksOn = (st: RaceState, date: string) => {
+      const m: Record<string, number> = {};
+      for (const x of st.options) {
+        const book = x.type === "put" ? feed.allPuts(x.symbol, date) : feed.book(x.symbol, date, "call", x.expiration);
+        const q = book.find((y) => y.expiry === x.expiration && Math.abs(y.strike - x.strike) < 1e-9);
+        const mid = q ? midOf(q) : null;
+        const c = feed.close(x.symbol, date);
+        if (mid !== null) m[x.id] = mid;
+        else if (c !== undefined) m[x.id] = Math.max(0, x.type === "put" ? x.strike - c : c - x.strike);
+      }
+      return m;
+    };
     const putBook = (date: string, exp: string) => {
       const k = `${date}|${exp}`;
       if (!putBooks.has(k)) putBooks.set(k, Object.fromEntries(tradable.filter((s) => feed.chain(s, date).length).map((s) => [s, feed.book(s, date, "put", exp)])));
@@ -360,7 +382,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       // Monday
       splitCheck(run, w.entry);
       const monExpiry = targetExpiry(run.rs.rules, w.entry);
-      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run), longs: longsMon(run) }, gMon));
+      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: run.rs.levers?.dte ? allPuts(w.entry) : putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run), longs: longsMon(run) }, gMon));
       remember(run, w.entry);
 
       // Wednesday (skipped in a week too short to have one between entry and expiry)
@@ -372,7 +394,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
           if (b) bars[s] = b;
         }
         const exp = run.state.current!.expiry;
-        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars, swing: swingIn(run, "wednesday", w.mid, gWed, cands), longs: run.rs.levers?.longs ? { books: longBooks(w.mid), spots: spotsOn(w.mid, held(run)) } : undefined }, gWed));
+        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: run.rs.levers?.dte ? allPuts(w.mid) : putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars, swing: swingIn(run, "wednesday", w.mid, gWed, cands), longs: run.rs.levers?.longs ? { books: longBooks(w.mid), spots: spotsOn(w.mid, held(run)) } : undefined }, gWed));
         remember(run, w.mid);
       }
 
@@ -388,8 +410,9 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         const b = feed.barsAsOf(s, w.last, { n: 60 });
         if (b) fBars[s] = b;
       }
-      const fin: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 }, swing: swingIn(run, "friday", w.last, gFri, cands) };
+      const fin: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number> } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 }, swing: swingIn(run, "friday", w.last, gFri, cands) };
       if (run.rs.levers?.fridayDecide || run.rs.levers?.fridayRollCalls) fin.decide = fridayInputs(run.rs, run.state, w.last, fin.closes);
+      if (run.rs.levers?.dte) fin.marks = marksOn(run.state, w.last);
       const res = run.impl.friday(run.state, fin) as RunResult & { week?: WeekRow };
       take(res);
       remember(run, w.last);
@@ -672,12 +695,13 @@ export async function parityCmd() {
   if (bad) process.exit(1);
 }
 
-/** Build data/cache (see feed.ts): every core day's chains and every week's IV, for every finished symbol. */
+/** Build data/cache (see feed.ts): every core day's chains and every week's IV, for every finished symbol. `--long`: the long-dated puts for levers.dte instead. */
 export async function cacheCmd() {
   const feed = await Feed.open();
   feed.useCache = false;
   await feed.loadBars(["SPY"]);
-  const symbols = opt("symbols")?.split(",") ?? Feed.finishedSymbols().symbols;
+  let symbols = opt("symbols")?.split(",") ?? Feed.finishedSymbols().symbols;
+  if (flag("missing")) symbols = symbols.filter((s) => !existsSync(join(DATA_DIR, "cache", flag("long") ? "chains-long" : "chains", `${s}.parquet`)));
   const weeks = feed.weeks("2016-01-01", opt("to") ?? new Date().toISOString().slice(0, 10));
   const days = new Set<string>();
   for (const [j, w] of weeks.entries()) {
@@ -686,6 +710,14 @@ export async function cacheCmd() {
     days.add(w.mid);
   }
   const t0 = Date.now();
+  if (flag("long")) {
+    console.log(`Caching long-dated puts (levers.dte) for ${symbols.length} symbols, ${days.size} chain days...`);
+    await feed.buildLongCache(symbols, [...days].sort(), (s, i) => {
+      if (i % 50 === 0 || i === symbols.length - 1) console.log(`  ${i + 1}/${symbols.length} ${s}  ${Math.round((Date.now() - t0) / 1000)}s`);
+    });
+    console.log(`Wrote data/cache/chains-long (${Math.round((Date.now() - t0) / 1000)}s)`);
+    return;
+  }
   console.log(`Caching ${symbols.length} symbols, ${days.size} chain days, ${weeks.length} IV days...`);
   await feed.buildCache(symbols, [...days].sort(), weeks.map((w) => w.last), (s, i) => {
     if (i % 50 === 0 || i === symbols.length - 1) console.log(`  ${i + 1}/${symbols.length} ${s}  ${Math.round((Date.now() - t0) / 1000)}s`);
