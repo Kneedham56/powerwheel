@@ -44,8 +44,8 @@ The state of each phase is kept in the journal (below), not here. This file only
    - swing trading (no options): Talon (built, `levers.swing`)
    - the wheel + swing: Zed (built)
    - buy and hold: Braum (built, `levers.hold`), and buy and hold + the wheel on the margin: Ornn (built)
-   - long calls/puts
-   - the wheel + long options
+   - long calls/puts: Jhin (built, `levers.longs`; calls only, since long puts lost in every form tried)
+   - the wheel + long options: Xayah (built)
 
    The data already includes calls. The ledger and the journal carry over, so earlier findings feed these.
 

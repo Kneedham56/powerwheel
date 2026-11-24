@@ -36,6 +36,7 @@ import { daysTo, midOf, rel, type Bar, type OptionQuote } from "../src/lib/rules
 import { inNeverSellZone, realMarket, stage, techAt, trendQualifies } from "./logic";
 import type { Ruleset } from "./rulesets";
 import { HOLD, holdOf, holdStep, type HoldInput } from "./hold";
+import { longsBuy, longsMid, longsOf, longsSettle, type LongMidInput, type LongMondayInput } from "./longs";
 import { adoptLot, inBuyZone, isSwingLot, swingCallFloor, swingEnter, swingHot, swingOf, swingWalk, type SwingInput } from "./swing";
 
 export interface EngineOptions {
@@ -69,8 +70,8 @@ export const CORE = "core";
  * counts toward the margin cap but not the wheel's exposure targets. */
 const isBook = (l: Lot) => l.theme === CORE || l.theme === HOLD;
 
-/** Options off: swing or buy and hold alone. */
-const noOptions = (rs: Ruleset) => swingOf(rs)?.mode === "only" || holdOf(rs)?.mode === "only";
+/** The wheel off: swing, buy and hold or long options alone. */
+const noOptions = (rs: Ruleset) => swingOf(rs)?.mode === "only" || holdOf(rs)?.mode === "only" || longsOf(rs)?.mode === "only";
 
 /** Share of the exposure target new puts may use: 1, or `riskOffScale` when a regime lever says risk-off. */
 export function regimeScale(rs: Ruleset, g?: Regime): number {
@@ -322,7 +323,7 @@ function adjustCore(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, spot
   }
 }
 
-export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput }, g?: Regime): RunResult {
+export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput }, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
@@ -353,6 +354,8 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   const value = accountValue(s, inp.spots);
   if (!only) sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday * regimeScale(rs, g), "monday");
   swingEnter(rs, o.maxLeverage, s, L, "monday", inp.date, ranked(rs, inp.candidates), inp.spots, inp.swing);
+  // levers.longs: weekly calls and puts, bought after the wheel's puts (which read the account value before the buys)
+  longsBuy(rs, o.fees, s, L, inp.date, inp.longs, LEVERAGED);
   adjustCore(rs, o, s, L, inp.spots, inp.date, g);
 
   s.current = { week: s.week, opened: inp.date, expiry: inp.expiry, valueAtOpen: r2(value) };
@@ -360,12 +363,13 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   return { state: s, trades: L.trades, report: [] };
 }
 
-export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: WednesdayInput & { swing?: SwingInput }, g?: Regime): RunResult {
+export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: WednesdayInput & { swing?: SwingInput; longs?: LongMidInput }, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   if (!s.current) throw new Error(`wednesday ${inp.date}: no week is open`);
   const L = new Ledger(s, inp.date, rs.name);
   for (const l of s.lots) if (inp.spots[l.symbol] !== undefined) l.mark = inp.spots[l.symbol];
   swingWalk(rs, s, L, "wednesday", inp.date, inp.spots, inp.swing);
+  longsMid(rs, o.fees, s, L, inp.longs);
 
   for (const x of s.options.filter((y) => y.type === "put")) {
     const q = inp.quotes.puts[x.symbol]?.find((y) => Math.abs(y.strike - x.strike) < 1e-9 && y.expiry === x.expiration);
@@ -582,6 +586,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
   }
 
   swingEnter(rs, o.maxLeverage, s, L, "friday", inp.date, inp.swing ? ranked(rs, inp.swing.cands) : [], inp.closes, inp.swing);
+  longsSettle(o.fees, s, L, inp.date, inp.closes);
   const value = accountValue(s);
   s.peak = Math.max(s.peak, value);
   const dd = value / s.peak - 1;

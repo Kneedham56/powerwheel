@@ -170,6 +170,15 @@ const LABELS: [RegExp, string][] = [
   [/^levers\.hold\.keep$/, "Buy and hold: sell a holding only once it ranks below this (a better name takes the money)"],
   [/^levers\.hold\.review$/, "Buy and hold: how often it looks for better names"],
   [/^levers\.hold\.(.+)$/, "Buy and hold: $1"],
+  [/^levers\.longs\.mode$/, "Long options: “only” = no wheel; “add” = beside the wheel"],
+  [/^levers\.longs\.(calls|puts)\.budget$/, "Long $1: premium spent each Monday, a share of the account"],
+  [/^levers\.longs\.(calls|puts)\.maxNames$/, "Long $1: how many names a week"],
+  [/^levers\.longs\.(calls|puts)\.strike$/, "Long $1: strike (atm = at the money, otm = about 30-delta, a number = that delta)"],
+  [/^levers\.longs\.(calls|puts)\.rank$/, "Long $1: what “best” means (the ranking)"],
+  [/^levers\.longs\.(calls|puts)\.universe$/, "Long $1: which names"],
+  [/^levers\.longs\.(calls|puts)\.maxSpread$/, "Long $1: only contracts whose spread is under this share of the price"],
+  [/^levers\.longs\.(calls|puts)\.minPrice$/, "Long $1: only contracts costing at least this a share"],
+  [/^levers\.longs\.(.+)$/, "Long options: $1"],
 ];
 
 function flat(o: unknown, pre = "", out: Record<string, unknown> = {}) {
@@ -185,8 +194,10 @@ const show = (path: string, v: unknown) => {
   if (typeof v === "number" && /ccCoverage|takeProfit|swing\.perName/.test(path)) return `${Math.round(v * 100)}%`;
   if (Array.isArray(v) && v.length === 2 && path.includes("swing.filters.")) return `${v[0] ?? "…"} to ${v[1] ?? "…"}`;
   if (Array.isArray(v) && path.endsWith("swing.entryDays")) return v.map((d) => String(d).slice(0, 3)).join(", ");
-  if (typeof v === "boolean" && /coveredCall\.use|swing\.|hold\./.test(path)) return v ? "yes" : "no";
-  if (path.endsWith("hold.rank")) return Array.isArray(v) ? v.join(" + ") : String(v);
+  if (typeof v === "boolean" && /coveredCall\.use|swing\.|hold\.|longs\./.test(path)) return v ? "yes" : "no";
+  if (path.endsWith("hold.rank") || /longs\.(calls|puts)\.rank$/.test(path)) return Array.isArray(v) ? v.join(" + ") : String(v);
+  if (typeof v === "number" && /longs\.(calls|puts)\.(budget|maxSpread|maxOiShare)$/.test(path)) return `${+(v * 100).toFixed(1)}%`;
+  if (typeof v === "number" && /longs\.(calls|puts)\.minPrice$/.test(path)) return `$${v.toFixed(2)}`;
   if (typeof v === "number" && path.endsWith("hold.keep") && v > 1e6) return "never";
   if (typeof v === "number" && /spyMaDays/.test(path)) return `${v} days`;
   return Array.isArray(v) ? JSON.stringify(v) : String(v);
