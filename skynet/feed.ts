@@ -496,6 +496,50 @@ export class Feed {
     return f && n ? f / n : null;
   }
 
+  /**
+   * levers.leaps: one day's long-dated chain per symbol, straight from the store (no cache): both sides, expiries
+   * `minDays`–`maxDays` out with |delta| 0.03–0.98, plus every strike of the `expiries` given (held positions' marks).
+   * A store read is ~0.2s per symbol-day, so the backtest asks only for the names it needs.
+   */
+  async leapsChains(symbols: string[], date: string, minDays: number, maxDays: number, expiries?: Record<string, string[]>): Promise<Record<string, (OptionQuote & { right: "call" | "put" })[]>> {
+    type Q = OptionQuote & { right: "call" | "put"; days: number };
+    // a sweep's runs step through the weeks together, so one day's reads are shared (and dropped on the next day)
+    if (this.leapsDay !== date) {
+      this.leapsDay = date;
+      this.leapsDayRows = new Map();
+    }
+    const out: Record<string, (OptionQuote & { right: "call" | "put" })[]> = {};
+    for (const s of symbols) {
+      if (!this.hasOptions(s)) continue;
+      let all = this.leapsDayRows.get(s) as Q[] | undefined;
+      if (!all) {
+        const sql = `SELECT strftime(expiration, '%Y-%m-%d') e, date_diff('day', date, expiration) n, strike, "right", bid, ask, delta, implied_vol iv
+          FROM read_parquet(${sq(P("option_greeks_eod", `${s}.parquet`))})
+          WHERE date = DATE ${sq(date)} AND expiration >= date AND expiration <= date + 1000`;
+        const rows = await this.rows<{ e: string; n: number | bigint; strike: number; right: string; bid: number | null; ask: number | null; delta: number | null; iv: number | null }>(sql);
+        all = rows.map((r) => ({
+          right: r.right === "CALL" ? "call" : "put",
+          days: Number(r.n),
+          strike: Number(r.strike),
+          expiry: r.e,
+          bid: r.bid === null ? null : Number(r.bid),
+          ask: r.ask === null ? null : Number(r.ask),
+          mark: null,
+          delta: r.delta === null ? null : Number(r.delta),
+          iv: r.iv === null ? null : Number(r.iv),
+          openInterest: null,
+        }));
+        this.leapsDayRows.set(s, all);
+      }
+      const held = new Set(expiries?.[s] ?? []);
+      const keep = all.filter((q) => held.has(q.expiry) || (maxDays > 0 && q.days >= minDays && q.days <= maxDays && q.delta !== null && Math.abs(q.delta) >= 0.03 && Math.abs(q.delta) <= 0.98));
+      if (keep.length) out[s] = keep;
+    }
+    return out;
+  }
+  private leapsDay = "";
+  private leapsDayRows = new Map<string, unknown[]>();
+
   /** Contracts of one type expiring on `expiry`, as the race's quote book wants them. */
   book(sym: string, date: string, type: "put" | "call", expiry: string): OptionQuote[] {
     return this.chain(sym, date)

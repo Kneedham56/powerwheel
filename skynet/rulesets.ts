@@ -11,6 +11,7 @@
 import type { AI, RULES } from "../src/lib/rules";
 import type { HoldLevers } from "./hold";
 import type { LongLevers } from "./longs";
+import type { LeapLevers } from "./leaps";
 import type { SwingLevers } from "./swing";
 
 /** Deep copy of a type with readonly and literal types widened, so variants can change any value. */
@@ -124,6 +125,8 @@ export interface Levers {
   dteStrike?: "scaled" | "weekly";
   /** levers.dte: on Wednesday, buy back any put with this many days or fewer left (and not expiring this week), e.g. 21. */
   dteClose?: number;
+  /** Long-dated options (skynet/leaps.ts): LEAPS calls and puts held for months, the long-dated wheel (puts sold months out, then calls on assigned shares), calls sold against LEAPS calls. */
+  leaps?: LeapLevers;
 }
 
 /**

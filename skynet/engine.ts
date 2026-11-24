@@ -37,6 +37,7 @@ import { inNeverSellZone, realMarket, stage, techAt, trendQualifies } from "./lo
 import type { Ruleset } from "./rulesets";
 import { HOLD, holdOf, holdStep, type HoldInput } from "./hold";
 import { longsBuy, longsMid, longsOf, longsSettle, type LongMidInput, type LongMondayInput } from "./longs";
+import { leapsFriday, leapsMonday, leapsOf, leapsValue, type LeapsFridayInput, type LeapsMondayInput } from "./leaps";
 import { adoptLot, inBuyZone, isSwingLot, swingCallFloor, swingEnter, swingHot, swingOf, swingWalk, type SwingInput } from "./swing";
 
 export interface EngineOptions {
@@ -71,7 +72,7 @@ export const CORE = "core";
 const isBook = (l: Lot) => l.theme === CORE || l.theme === HOLD;
 
 /** The wheel off: swing, buy and hold or long options alone. */
-const noOptions = (rs: Ruleset) => swingOf(rs)?.mode === "only" || holdOf(rs)?.mode === "only" || longsOf(rs)?.mode === "only";
+const noOptions = (rs: Ruleset) => swingOf(rs)?.mode === "only" || holdOf(rs)?.mode === "only" || longsOf(rs)?.mode === "only" || leapsOf(rs)?.mode === "only";
 
 /** Share of the exposure target new puts may use: 1, or `riskOffScale` when a regime lever says risk-off. */
 export function regimeScale(rs: Ruleset, g?: Regime): number {
@@ -354,7 +355,7 @@ function adjustCore(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, spot
   }
 }
 
-export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput }, g?: Regime): RunResult {
+export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput; leaps?: Omit<LeapsMondayInput, "baseValue"> }, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
@@ -387,6 +388,8 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   swingEnter(rs, o.maxLeverage, s, L, "monday", inp.date, ranked(rs, inp.candidates), inp.spots, inp.swing);
   // levers.longs: weekly calls and puts, bought after the wheel's puts (which read the account value before the buys)
   longsBuy(rs, o.fees, s, L, inp.date, inp.longs, LEVERAGED);
+  // levers.leaps: long-dated books, last (they size on the whole account: the rest at Monday's prices + their marks)
+  if (inp.leaps) leapsMonday(rs, o.fees, s, L, inp.date, { ...inp.leaps, baseValue: accountValue(s, inp.spots) }, LEVERAGED);
   adjustCore(rs, o, s, L, inp.spots, inp.date, g);
 
   s.current = { week: s.week, opened: inp.date, expiry: inp.expiry, valueAtOpen: r2(value) };
@@ -627,7 +630,8 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
 
   swingEnter(rs, o.maxLeverage, s, L, "friday", inp.date, inp.swing ? ranked(rs, inp.swing.cands) : [], inp.closes, inp.swing);
   longsSettle(o.fees, s, L, inp.date, inp.closes);
-  const value = accountValue(s, {}, inp.marks);
+  leapsFriday(rs, o.fees, s, L, inp.date, (inp as FridayInput & { leaps?: LeapsFridayInput }).leaps);
+  const value = accountValue(s, {}, inp.marks) + leapsValue(s);
   s.peak = Math.max(s.peak, value);
   const dd = value / s.peak - 1;
   s.maxDrawdown = Math.min(s.maxDrawdown, dd);

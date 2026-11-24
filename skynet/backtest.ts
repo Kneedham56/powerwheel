@@ -38,13 +38,14 @@ import {
   type WeekRow,
 } from "../src/lib/race";
 import { AI, FUNDS, midOf, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../src/lib/rules";
-import { friday, monday, ranked, regimeScale, wednesday, type EngineOptions, type FridayDecideInput, type Regime } from "./engine";
+import { friday, LEVERAGED, monday, ranked, regimeScale, wednesday, type EngineOptions, type FridayDecideInput, type Regime } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
 import { holdFeatures, isHoldLot, type HoldFeatures, type HoldInput } from "./hold";
 import type { SwingInput, SwingState } from "./swing";
 import { longFeatures, type LongMidInput, type LongMondayInput, type LongState } from "./longs";
+import { leapsHeld, leapsWanted, leapWindow, type LeapState, type LeapsFridayInput, type LeapsMondayInput } from "./leaps";
 import { summarize, type Holding, type RunFile, type RunWeek, type RunOptions, type Totals, type YearRow } from "./results";
 import { loadSectors } from "./sectors";
 
@@ -78,9 +79,9 @@ interface SundayIn {
 interface Impl {
   label: string;
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
-  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput }, g?: Regime): RunResult;
+  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput; leaps?: Omit<LeapsMondayInput, "baseValue"> }, g?: Regime): RunResult;
   wednesday(s: RaceState, inp: WednesdayInput & { swing?: SwingInput; longs?: LongMidInput }, g?: Regime): RunResult;
-  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number> }): RunResult;
+  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number>; leaps?: LeapsFridayInput }): RunResult;
 }
 
 function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
@@ -211,7 +212,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       loadedYear = year;
     }
 
-    const held = (r: Run) => [...new Set([...r.state.lots.map((l) => l.symbol), ...r.state.options.map((x) => x.symbol), ...((r.state as LongState).longs ?? []).map((p) => p.symbol)])];
+    const held = (r: Run) => [...new Set([...r.state.lots.map((l) => l.symbol), ...r.state.options.map((x) => x.symbol), ...((r.state as LongState).longs ?? []).map((p) => p.symbol), ...((r.state as LeapState).leaps ?? []).map((p) => p.symbol)])];
     // splits: shares and open options follow the stock (raw ÷ split-adjusted changes by the ratio). The factor is
     // remembered after every run for what's held, and forgotten once a name isn't, so an old split never reaches a
     // later position.
@@ -224,6 +225,9 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         for (const l of r.state.lots.filter((x) => x.symbol === sym)) Object.assign(l, { shares: l.shares * m, cost: l.cost / m, mark: l.mark / m });
         for (const x of r.state.options.filter((y) => y.symbol === sym)) Object.assign(x, { strike: x.strike / m, contracts: x.contracts * m, price: x.price / m });
         for (const x of ((r.state as LongState).longs ?? []).filter((y) => y.symbol === sym)) Object.assign(x, { strike: x.strike / m, contracts: x.contracts * m, cost: x.cost / m });
+        for (const x of ((r.state as LeapState).leaps ?? []).filter((y) => y.symbol === sym))
+          if (x.book === "shares") Object.assign(x, { qty: x.qty * m, cost: x.cost / m, strike: x.strike / m, mark: x.mark / m });
+          else Object.assign(x, { strike: x.strike / m, qty: x.qty * m, cost: x.cost / m, mark: x.mark / m });
         r.notes.push(`${date}: ${sym} split ${m.toFixed(3)} for 1; shares and open options adjusted`);
       }
     };
@@ -355,8 +359,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
     const longFeatsBy = new Map<string, Record<string, Record<string, number | null>>>(); // by report (the score feature)
     const longBig = tradable.filter((s) => meta[s]?.bigEnough && meta[s]?.weeklies && sundayBars[s]);
     const longBooks = (date: string) => (sym: string, type: "call" | "put") => feed.book(sym, date, type, w.last);
-    const longsMon = (run: Run): LongMondayInput | undefined => {
-      if (!run.rs.levers?.longs) return undefined;
+    const longFeatsFor = (run: Run) => {
       let feats = longFeatsBy.get(run.key);
       if (!feats) {
         feats = {};
@@ -368,7 +371,39 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         }
         longFeatsBy.set(run.key, feats);
       }
+      return feats;
+    };
+    const longsMon = (run: Run): LongMondayInput | undefined => {
+      if (!run.rs.levers?.longs) return undefined;
+      const feats = longFeatsFor(run);
       return { feats, big: longBig.filter((s) => feats![s]), funds, expiry: w.last, books: longBooks(w.entry), spots: spotsOn(w.entry, longBig), riskOn: regimeScale(run.rs, gMon) >= 1 };
+    };
+
+    // levers.leaps: Monday's long-dated chains for the held names and the top of each book's ranking
+    const leapsReviews = () => {
+      const m = Number(w.entry.slice(5, 7));
+      const monthly = w.entry.slice(0, 7) !== prev.entry.slice(0, 7);
+      return { weekly: true, monthly, quarterly: monthly && m % 3 === 1, yearly: monthly && m === 1 };
+    };
+    const leapsMon = async (run: Run): Promise<Omit<LeapsMondayInput, "baseValue"> | undefined> => {
+      const B = run.rs.levers?.leaps;
+      if (!B) return undefined;
+      const feats = longFeatsFor(run);
+      const big = longBig.filter((s) => feats[s]);
+      const spots = spotsOn(w.entry, [...new Set([...longBig, ...held(run)])]);
+      const base = { feats, big, funds, spots };
+      const want = leapsWanted(run.rs, run.state, base, LEVERAGED);
+      const [lo, hi] = leapWindow(B);
+      const exps = Object.fromEntries(leapsHeld(run.state).map((h) => [h.symbol, h.expiries]));
+      const chains = await feed.leapsChains(want, w.entry, lo, hi, exps);
+      return { ...base, spots: { ...spots, ...spotsOn(w.entry, want) }, chains, riskOn: regimeScale(run.rs, gMon) >= 1, reviews: leapsReviews() };
+    };
+    const leapsFri = async (run: Run): Promise<LeapsFridayInput | undefined> => {
+      if (!run.rs.levers?.leaps) return undefined;
+      const h = leapsHeld(run.state);
+      if (!h.length) return undefined;
+      const exps = Object.fromEntries(h.map((x) => [x.symbol, x.expiries]));
+      return { chains: await feed.leapsChains(h.map((x) => x.symbol), w.last, 0, 0, exps), closes: spotsOn(w.last, h.map((x) => x.symbol)) };
     };
 
     for (const run of rr) {
@@ -382,7 +417,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       // Monday
       splitCheck(run, w.entry);
       const monExpiry = targetExpiry(run.rs.rules, w.entry);
-      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: run.rs.levers?.dte ? allPuts(w.entry) : putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run), longs: longsMon(run) }, gMon));
+      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: run.rs.levers?.dte ? allPuts(w.entry) : putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run), longs: longsMon(run), leaps: await leapsMon(run) }, gMon));
       remember(run, w.entry);
 
       // Wednesday (skipped in a week too short to have one between entry and expiry)
@@ -410,7 +445,8 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         const b = feed.barsAsOf(s, w.last, { n: 60 });
         if (b) fBars[s] = b;
       }
-      const fin: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number> } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 }, swing: swingIn(run, "friday", w.last, gFri, cands) };
+      const fin: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number>; leaps?: LeapsFridayInput } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 }, swing: swingIn(run, "friday", w.last, gFri, cands) };
+      fin.leaps = await leapsFri(run);
       if (run.rs.levers?.fridayDecide || run.rs.levers?.fridayRollCalls) fin.decide = fridayInputs(run.rs, run.state, w.last, fin.closes);
       if (run.rs.levers?.dte) fin.marks = marksOn(run.state, w.last);
       const res = run.impl.friday(run.state, fin) as RunResult & { week?: WeekRow };
