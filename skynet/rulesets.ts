@@ -9,6 +9,7 @@
  * to USED_NAMES. Sweep variants hang under a parent, like "Kindred · delta 0.22".
  */
 import type { AI, RULES } from "../src/lib/rules";
+import type { HoldLevers } from "./hold";
 import type { SwingLevers } from "./swing";
 
 /** Deep copy of a type with readonly and literal types widened, so variants can change any value. */
@@ -101,6 +102,8 @@ export interface Levers {
   fridayRollCalls?: boolean;
   /** Swing trading (skynet/swing.ts): buy shares low and sell them high from the same Sunday report, alone ("only") or beside the wheel ("add"). */
   swing?: SwingLevers;
+  /** Buy and hold (skynet/hold.ts): the cash in the best-ranked names, sold only for a better one; alone ("only") or with the wheel on the margin above it ("add"). */
+  hold?: HoldLevers;
 }
 
 /**
@@ -186,7 +189,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {
@@ -353,7 +356,45 @@ export const ZED: Ruleset = {
   },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED };
+/**
+ * Braum: buy and hold, no options (Claude's fifth solo round, 2026-11-24). All the cash goes into 10 stocks (no funds,
+ * no leveraged ETFs, 20-day dollar volume $100M+), an equal share each, ranked by the average of two ranks: `smooth`
+ * (the share of up weeks in the last year) and `mom12` (the 12-month return skipping the last month). That's
+ * momentum that came in many small steady gains rather than a few jumps (the "frog in the pan" effect). Four times a
+ * year (the first week of Jan, Apr, Jul, Oct) a holding that has fallen out of the top 30 is sold, and its money buys
+ * the best stock not held. Nothing else sells: no stop, no target, no trimming winners, no market timing. Pooled over
+ * 11 universes: 32.3%/yr vs SPY 12.3%, max drawdown −39% vs −32%, worst year −9.7%, better in 11 of 11. Every
+ * neighbour (5–30 names, keep 20–100, weekly to quarterly, mom6 or ret12 in place of mom12) makes 25–37%; placebos
+ * that swap momentum for noise make 14–16%. Momentum alone made 21–24% with drawdowns of −60 to −72%.
+ */
+export const BRAUM: Ruleset = {
+  ...AZIR,
+  name: "Braum",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Buy and hold: 10 stocks ranked by steady up weeks + 12-month momentum; each quarter a holding out of the top 30 is sold for the best stock not held. No options.",
+  levers: {
+    ...AZIR.levers,
+    hold: { mode: "only", exposure: 1, maxNames: 10, rank: ["smooth", "mom12"], universe: "stocks", keep: 30, review: "quarterly" },
+  },
+};
+
+/**
+ * Ornn: Braum's book on the cash and Azir's wheel on the margin above it (Claude's fifth solo round, 2026-11-24). The
+ * book is 1x the account; its lots count toward the 2x margin cap but not the wheel's exposure targets, so Azir's puts
+ * get up to the 1x above the book. The wheel is Azir unchanged (covered calls on 25% of assigned shares, the floor
+ * stop, the SPY 175-day gate). The book's lots never get calls or stops.
+ */
+export const ORNN: Ruleset = {
+  ...AZIR,
+  name: "Ornn",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Braum's buy-and-hold book on the cash (1x) + Azir's wheel on the margin above it (up to 2x in all).",
+  levers: { ...AZIR.levers, hold: { ...BRAUM.levers!.hold!, mode: "add" } },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];
