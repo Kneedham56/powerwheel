@@ -169,6 +169,32 @@ export function aiTarget(rs: Ruleset, c: CandidateRow) {
   return c.floor !== null && near <= c.floor ? base : Math.max(base, near);
 }
 
+/**
+ * levers.dte: the Thursday/Friday expiry in `book` nearest `dte` days after `date`, within ±10 days and never under the
+ * rules' minimum days (ties go to the nearer date). Null when the name has none in that window.
+ */
+export function dteExpiry(book: OptionQuote[], date: string, dte: number, minDays: number): string | null {
+  let best: string | null = null;
+  let gap = Infinity;
+  for (const e of new Set(book.map((q) => q.expiry))) {
+    const wd = new Date(`${e}T12:00:00Z`).getUTCDay();
+    if (wd !== 4 && wd !== 5) continue;
+    const d = daysTo(date, e);
+    if (d < Math.max(minDays, dte - 10) || d > dte + 10) continue;
+    const g = Math.abs(d - dte);
+    if (g < gap || (g === gap && e < best!)) [best, gap] = [e, g];
+  }
+  return best;
+}
+
+/** levers.dte: the expected-move strike for an option expiring on `exp` (see `dteStrike`). */
+function dteTarget(rs: Ruleset, c: CandidateRow, date: string, exp: string) {
+  if (rs.levers?.dteStrike === "weekly" || c.exp_move === null) return aiTarget(rs, c);
+  const aggressive = (c.score ?? 0) >= rs.ai.strike.aggressiveMinScore && c.group_quadrant === "Leading";
+  const moves = aggressive ? rs.ai.strike.aggressiveMoves : rs.ai.strike.moves;
+  return c.last - moves * c.exp_move * Math.sqrt((daysTo(date, exp) + 1) / 5);
+}
+
 function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands: CandidateRow[], quotes: QuoteBook, spots: Record<string, number>, date: string, expiry: string, exposureTarget: number, day: "monday" | "wednesday") {
   const A = rs.ai;
   const roc = day === "monday" && rs.levers?.putStrike === "roc" ? (rs.levers.rocTarget ?? 0.01) : null;
@@ -182,29 +208,34 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
     if (lv?.minScore !== undefined && (c.score ?? 0) < lv.minScore) continue;
     if (lv?.noLeveraged && LEVERAGED.has(c.symbol)) continue;
     if ((lv?.ivMin !== undefined && (c.iv ?? -1) < lv.ivMin) || (lv?.ivMax !== undefined && (c.iv === null || c.iv > lv.ivMax))) continue;
-    const book = quotes[c.symbol];
+    let book = quotes[c.symbol];
     if (book === undefined) continue;
-    const base = { symbol: c.symbol, type: "put" as const, expiration: expiry };
+    // levers.dte: one expiry per name, the nearest to the target days; every sale below may then use it
+    const dte = lv?.dte;
+    const dteExp = dte ? dteExpiry(book, date, dte, rs.rules.pick.minExpiryDays) : null;
+    if (dte) book = book.filter((q) => q.expiry === dteExp);
+    const last = dte ? (dteExp ?? expiry) : expiry;
+    const base = { symbol: c.symbol, type: "put" as const, expiration: last };
     if (!book.length) {
-      L.add("Skipped", { ...base, note: `${tag}: no weekly expiring ${expiry}` });
+      L.add("Skipped", { ...base, note: dte ? `${tag}: no Thursday/Friday expiry ${dte} ± 10 days out` : `${tag}: no weekly expiring ${expiry}` });
       continue;
     }
     const px0 = spots[c.symbol] ?? c.last;
     // levers.swing.putMoves: a buy-zone name's put goes nearer the money (more premium, aiming to be assigned low)
     const pm = rs.levers?.swing?.putMoves;
     const zone = pm !== undefined && c.exp_move !== null && inBuyZone(rs, c);
-    const target = zone ? c.last - pm! * c.exp_move! : roc === null ? aiTarget(rs, c) : px0;
+    const target = zone ? c.last - pm! * c.exp_move! : roc !== null ? px0 : dte ? dteTarget(rs, c, date, last) : aiTarget(rs, c);
     const ok =
       delta !== null
         ? book
-            .filter((q) => q.expiry <= expiry && q.strike < px0 && q.delta !== null && Math.abs(q.delta) <= delta && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
+            .filter((q) => q.expiry <= last && q.strike < px0 && q.delta !== null && Math.abs(q.delta) <= delta && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
             .sort((a, b) => b.strike - a.strike)
         : roc === null
         ? book
-            .filter((q) => q.expiry <= expiry && q.strike <= target + 1e-9 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
+            .filter((q) => q.expiry <= last && q.strike <= target + 1e-9 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= A.minWeekly)
             .sort((a, b) => b.strike - a.strike)
         : book
-            .filter((q) => q.expiry <= expiry && q.strike < px0 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= roc)
+            .filter((q) => q.expiry <= last && q.strike < px0 && realMarket(rs.rules, q) && (weekly(q, date) ?? 0) >= roc)
             .sort((a, b) => a.strike - b.strike);
     const q = ok[0];
     if (!q) {
@@ -379,7 +410,10 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
     const broke = floor !== null && lastClose !== null && lastClose < floor;
     if (!q || midOf(q) === null) continue;
     const captured = 1 - midOf(q)! / x.price;
-    if (captured < rs.ai.takeProfit && !broke) continue;
+    // levers.dteClose: a long put with this many days or fewer left is closed (one expiring this week is left to settle)
+    const left = daysTo(inp.date, x.expiration);
+    const late = rs.levers?.dteClose !== undefined && left <= rs.levers.dteClose && left > 3;
+    if (captured < rs.ai.takeProfit && !broke && !late) continue;
     const px = buyFill(rs, q);
     const cash = -px * 100 * x.contracts - o.fees * x.contracts;
     s.cash += cash;
@@ -398,6 +432,8 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
       position_id: x.id,
       note: broke
         ? `Closed below its floor (${r2(floor!)}); out before Friday, ${kept >= 0 ? "kept" : "lost"} ${usd(Math.abs(kept))}`
+        : captured < rs.ai.takeProfit
+        ? `${Math.round(left)} days left (closes at ${rs.levers!.dteClose}); ${pct(captured, 0)} of the premium captured, ${kept >= 0 ? "kept" : "lost"} ${usd(Math.abs(kept))}`
         : `${pct(captured, 0)} of the premium captured by Wednesday; kept ${usd(kept)} and freed the collateral`,
     });
   }
@@ -515,7 +551,11 @@ function fridayDecide(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, in
 }
 
 /** Friday: settle expiring options at the close, stop out shares, mark to the close and score the week. `opp` is the benchmark's value. */
-export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput }): RunResult & { week: WeekRow } {
+/**
+ * `marks` (levers.dte): option id → Friday's closing value per share, for options that stay open past Friday. Without
+ * it an open option counts at its sale price (the race's way, fine when everything expires that Friday).
+ */
+export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput; marks?: Record<string, number> }): RunResult & { week: WeekRow } {
   const s: RaceState = structuredClone(s0);
   if (!s.current) s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
@@ -587,7 +627,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
 
   swingEnter(rs, o.maxLeverage, s, L, "friday", inp.date, inp.swing ? ranked(rs, inp.swing.cands) : [], inp.closes, inp.swing);
   longsSettle(o.fees, s, L, inp.date, inp.closes);
-  const value = accountValue(s);
+  const value = accountValue(s, {}, inp.marks);
   s.peak = Math.max(s.peak, value);
   const dd = value / s.peak - 1;
   s.maxDrawdown = Math.min(s.maxDrawdown, dd);

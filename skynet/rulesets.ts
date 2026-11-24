@@ -107,6 +107,23 @@ export interface Levers {
   hold?: HoldLevers;
   /** Long options (skynet/longs.ts): buy weekly calls and puts, alone ("only") or beside the wheel ("add"). */
   longs?: LongLevers;
+  /**
+   * Longer-dated puts (Zilean): Monday's and Wednesday's puts go on the Thursday/Friday expiry nearest this many days
+   * out (within ±10 days, ties to the nearer one) instead of this week's Friday. A name holds one put at a time, so an
+   * open put blocks new ones on it until it's closed or settled. Open options are marked to market every Friday (mid,
+   * or intrinsic with no quote). The premium minimum stays per week (`ai.minWeekly` × the weeks the option spans).
+   * Covered calls stay weekly. Needs the long chains (`npm run skynet -- cache --long`).
+   */
+  dte?: number;
+  /**
+   * levers.dte: where the expected-move strike goes. "scaled" (default): `ai.strike.moves` expected moves for the
+   * option's own life (the report's weekly move × √((days + 1) ÷ 5)), about the weekly put's chance of assignment.
+   * "weekly": Azir's strike as is, one weekly move under (much nearer the money for a long option). `putStrike: "delta"`
+   * still works on Monday.
+   */
+  dteStrike?: "scaled" | "weekly";
+  /** levers.dte: on Wednesday, buy back any put with this many days or fewer left (and not expiring this week), e.g. 21. */
+  dteClose?: number;
 }
 
 /**
@@ -192,7 +209,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn", "Jhin", "Xayah"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn", "Jhin", "Xayah", "Zilean"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {

@@ -137,7 +137,7 @@ Its top section always holds **current state**, **open questions** and **next up
 **Strike and expiry**
 - Expected-move distance (`ai.strike.moves`, 0.5–1.5), and the aggressive tilt (`aggressiveMoves`, `aggressiveMinScore`). Exists.
 - A delta target instead of the expected move (0.10–0.35). Built (`levers.putStrike: "delta"`).
-- Expiry: weekly (base), 2 weeks, or about 30–45 days and managed weekly. Code: positions span weeks.
+- Expiry: weekly (base), or N days out and managed weekly. Built (`levers.dte`, `dteStrike`, `dteClose`; Zilean).
 - Floor guard: ATR under the floor (`rules.strike.atrBelowFloor`). Exists.
 
 **Managing open puts**
