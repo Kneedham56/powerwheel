@@ -38,7 +38,7 @@ import {
   type WeekRow,
 } from "../src/lib/race";
 import { AI, FUNDS, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../src/lib/rules";
-import { friday, monday, wednesday, type EngineOptions, type Regime } from "./engine";
+import { friday, monday, wednesday, type EngineOptions, type FridayDecideInput, type Regime } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
@@ -77,7 +77,7 @@ interface Impl {
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
   monday(s: RaceState, inp: MondayInput, g?: Regime): RunResult;
   wednesday(s: RaceState, inp: WednesdayInput, g?: Regime): RunResult;
-  friday(s: RaceState, inp: FridayInput): RunResult;
+  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput }): RunResult;
 }
 
 function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
@@ -183,6 +183,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         if (j > 0) days.add(weeks[j - 1].last);
         days.add(x.entry);
         days.add(x.mid);
+        days.add(x.last); // the Friday decide rule reads Friday's chain (usually next week's "Friday before" anyway)
       }
       feed.dropChainsBefore(prev.last);
       if (!o.quiet) process.stdout.write(`  ${year}: loading chains for ${tradable.length} symbols, ${days.size} days... `);
@@ -251,6 +252,21 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
     const spy = feed.close("SPY", w.last)!;
     // the market as of the close before each run (no look-ahead)
     const regimeAt = (date: string): Regime => ({ spy: (feed.barsAsOf("SPY", date, { strict: true, n: 250 }) ?? []).map((b) => b.close), vix: feed.asOf(feed.vix, addDays(date, -1)) ?? null, px: Object.fromEntries(["SPY", "QQQ"].map((x) => [x, feed.close(x, date)]).filter(([, c]) => c !== undefined)) });
+    // the Friday decide rule's inputs: bars, today's and next week's quotes for the options in the money at the close
+    const fridayInputs = (rs: Ruleset, st: RaceState, date: string, closes: Record<string, number>): FridayDecideInput => {
+      const itm = st.options.filter((x) => x.expiration <= date && closes[x.symbol] !== undefined && (x.type === "put" ? closes[x.symbol] < x.strike : closes[x.symbol] > x.strike));
+      const syms = [...new Set(itm.map((x) => x.symbol))];
+      const next = targetExpiry(rs.rules, addDays(date, 3));
+      const bk = (type: "put" | "call", exp: (sym: string) => string[]) =>
+        Object.fromEntries(syms.filter((s) => feed.chain(s, date).length).map((s) => [s, exp(s).flatMap((e) => feed.book(s, date, type, e))]));
+      const todayExp = (sym: string) => [...new Set(itm.filter((x) => x.symbol === sym).map((x) => x.expiration))];
+      return {
+        bars: Object.fromEntries(syms.map((s) => [s, feed.barsAsOf(s, date) ?? []])),
+        spy: feed.barsAsOf("SPY", date) ?? [],
+        today: { puts: bk("put", todayExp), calls: bk("call", todayExp) },
+        next: { expiry: next, puts: bk("put", () => [next]), calls: bk("call", () => [next]) },
+      };
+    };
     const gMon = regimeAt(w.entry);
     const gWed = regimeAt(w.mid);
 
@@ -293,7 +309,9 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         const b = feed.barsAsOf(s, w.last, { n: 60 });
         if (b) fBars[s] = b;
       }
-      const res = run.impl.friday(run.state, { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 } }) as RunResult & { week?: WeekRow };
+      const fin: FridayInput & { decide?: FridayDecideInput } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 } };
+      if (run.rs.levers?.fridayDecide || run.rs.levers?.fridayRollCalls) fin.decide = fridayInputs(run.rs, run.state, w.last, fin.closes);
+      const res = run.impl.friday(run.state, fin) as RunResult & { week?: WeekRow };
       take(res);
       remember(run, w.last);
       if (res.week) run.rows.push({ ...res.week, note: [res.week.note, `vix ${feed.asOf(feed.vix, w.last) ?? ""}`].filter(Boolean).join("; ") });
