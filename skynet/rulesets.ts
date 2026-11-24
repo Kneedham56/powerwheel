@@ -454,7 +454,30 @@ export const XAYAH: Ruleset = {
   levers: { ...AZIR.levers, longs: { ...JHIN.levers!.longs!, mode: "add", calls: { ...JHIN.levers!.longs!.calls!, budget: 0.02 } } },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN, jhin: JHIN, xayah: XAYAH };
+/**
+ * Zilean: Azir with longer-dated puts (Claude's seventh solo round, 2026-11-24). Monday's and Wednesday's puts go on
+ * the Thursday/Friday expiry nearest 45 days out, at the highest strike with |delta| 0.30 or less, and on Wednesday any
+ * put with 21 days or fewer left is bought back. The Sunday report, sizing, covered calls and the rest stay Azir.
+ * Kyle asked whether longer puts (at least 21, 30 and 35 days) beat the weekly wheel, on return or on risk. Pooled
+ * over 11 universes it wins on risk and loses on return. The first grid's 45-day winners (19.8%/yr vs Azir's 16.5%)
+ * came almost all from one 2020 NIO assignment that ran 15x, and NIO is in every slice. With NIO removed, Zilean makes
+ * 13.1%/yr vs Azir's 16.0% (better in 2 of 11), with a max drawdown of −18% vs −30%, a worst year of −3.6% vs −11%
+ * and a Sharpe of 1.20 vs 0.80. It gives up the bull years (2021, 2025), where selling every week compounds faster.
+ * Spending the spare risk doesn't flip it: more exposure and 25% a name lift Zilean to 18.0% (DD −27%), but the same
+ * 25% a name lifts Azir to 20.4% (DD −36%), and fills at half the spread cost Zilean 2%/yr (Azir 0.6%). 21–35 days do
+ * worse on both counts, and so do the strike scaled to the option's life (too far out to pay the weekly minimum), 50%
+ * take profit, delta 0.20 and delta 0.30 on weekly puts. Azir's own strike on 45-day puts ties Azir, same drawdown.
+ */
+export const ZILEAN: Ruleset = {
+  ...AZIR,
+  name: "Zilean",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Azir with 45-day puts: delta 0.30 strike, bought back at 21 days left. Covered calls stay weekly.",
+  levers: { ...AZIR.levers, dte: 45, putStrike: "delta", deltaTarget: 0.3, dteClose: 21 },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN, jhin: JHIN, xayah: XAYAH, zilean: ZILEAN };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];

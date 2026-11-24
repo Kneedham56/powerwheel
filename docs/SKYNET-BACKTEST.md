@@ -59,8 +59,7 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - **Ornn** is Braum's book on the cash (1x) with Azir's wheel on the margin above it (up to the 2x cap).
 - **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
 - **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
-- **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
-- **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
+- **Zilean** is Azir with longer-dated puts (`levers.dte`): the Thursday/Friday expiry nearest 45 days out, the strike at 0.30 delta, bought back on the Wednesday with 21 days or fewer left. Lower drawdowns than Azir, lower return. It needs the long chains: `npm run skynet -- cache --long`.
 
 ## Variants and levers
 
