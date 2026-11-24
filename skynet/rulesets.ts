@@ -9,6 +9,7 @@
  * to USED_NAMES. Sweep variants hang under a parent, like "Kindred · delta 0.22".
  */
 import type { AI, RULES } from "../src/lib/rules";
+import type { SwingLevers } from "./swing";
 
 /** Deep copy of a type with readonly and literal types widened, so variants can change any value. */
 type Widen<T> = T extends number
@@ -98,6 +99,8 @@ export interface Levers {
    * week at the highest strike (at or over this one and the cost) that still nets a credit; otherwise let it be called.
    */
   fridayRollCalls?: boolean;
+  /** Swing trading (skynet/swing.ts): buy shares low and sell them high from the same Sunday report, alone ("only") or beside the wheel ("add"). */
+  swing?: SwingLevers;
 }
 
 /**
@@ -183,7 +186,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {
@@ -294,7 +297,63 @@ export const VEIGAR: Ruleset = {
   levers: { ...AZIR.levers, prep: { ...AZIR.levers!.prep, filters: { rv60: [null, 0.8] } } },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR };
+/**
+ * Talon: swing trading only, no options (Claude's fourth solo round, 2026-11-24). It reads Azir's Sunday report and,
+ * on any run day (Monday, Wednesday, Friday, at the close), buys the report's eligible names whose 14-day RSI is at or
+ * under 40, in score order: a pullback inside an uptrend. Up to 8 names at 15% of the account each (1x at most), no
+ * new buys while SPY is under its 175-day average. A position is sold at the first daily close with RSI at or over 70,
+ * a close under its 20-day low at entry minus 1 ATR, or after 28 days. Pooled over 11 universes it makes about what SPY
+ * does (12.4%/yr, max drawdown −33%) and trails Azir (16.5%). A fixed target (3 ATR) and a trailing floor both did
+ * worse; the RSI 40 entry is a narrow peak (35 and 45 do much worse), so treat it as thin.
+ */
+export const TALON: Ruleset = {
+  ...AZIR,
+  name: "Talon",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Swing only: buy the Sunday report's names at RSI ≤ 40 (any run day), sell at RSI ≥ 70, a stop 1 ATR under the 20-day low, or 28 days. No options.",
+  levers: {
+    ...AZIR.levers,
+    swing: {
+      mode: "only",
+      exposure: 1,
+      perName: 0.15,
+      maxNames: 8,
+      entryDays: ["monday", "wednesday", "friday"],
+      entry: "close",
+      filters: { rsi: [null, 40] },
+      regime: true,
+      rsiExit: 70,
+      stopFloor: true,
+      stopFloorAtr: 1,
+      maxDays: 28,
+    },
+  },
+};
+
+/**
+ * Zed: Azir's wheel with Talon's swing trading beside it (Claude's fourth solo round, 2026-11-24). Two changes to
+ * Azir. (1) No covered calls: assigned shares ride with Nasus's floor stop and downtrend sale, so a name that runs after
+ * assignment isn't capped (pooled over 11 universes, this alone is +1.7%/yr, better on 2018–23 and on 2024–25).
+ * (2) A small Talon book on the spare margin: up to 3 names at 10% of the account (0.3x), bought at RSI ≤ 40 on any
+ * run day and sold at RSI ≥ 70, a stop 1 ATR under the 20-day low, or 28 days. Kyle's other wheel + swing ideas were
+ * tested and left out: aiming puts nearer the money on oversold names (neutral), running assigned shares on swing exits
+ * or a trailing floor (sells 2025's runners), covered calls at the swing target and the Wednesday hard sell (worse).
+ */
+export const ZED: Ruleset = {
+  ...AZIR,
+  name: "Zed",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Azir with no covered calls, plus a 0.3x Talon swing book (3 names at 10%: RSI ≤ 40 in, RSI ≥ 70 / stop / 28 days out).",
+  ai: { ...AZIR.ai, coveredCall: { ...AZIR.ai.coveredCall, use: false } },
+  levers: {
+    ...AZIR.levers,
+    swing: { ...TALON.levers!.swing!, mode: "add", exposure: 0.3, maxNames: 3, perName: 0.1 },
+  },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];
