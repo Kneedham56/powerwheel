@@ -44,7 +44,7 @@ import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
 import { holdFeatures, isHoldLot, type HoldFeatures, type HoldInput } from "./hold";
 import type { SwingInput, SwingState } from "./swing";
-import { summarize, type RunFile, type RunOptions, type Totals, type YearRow } from "./results";
+import { summarize, type Holding, type RunFile, type RunWeek, type RunOptions, type Totals, type YearRow } from "./results";
 import { loadSectors } from "./sectors";
 
 /**
@@ -110,13 +110,25 @@ const liveImpl: Impl = {
 // ---------------------------------------------------------------------------
 
 export interface RunOutput {
-  weeks: WeekRow[];
+  weeks: RunWeek[];
   trades: Trade[];
   candidates: Map<string, CandidateRow[]>; // per Sunday, for the parity check
   state: RaceState;
   notes: string[];
   interest: number;
   spyStart: number;
+}
+
+/** The shares held after a Friday: every lot of a name added up, at the close it was marked at. */
+function holdingsOf(st: RaceState): Holding[] {
+  const by = new Map<string, Holding>();
+  for (const l of st.lots) {
+    const h = by.get(l.symbol) ?? { symbol: l.symbol, shares: 0, price: l.mark };
+    h.shares += l.shares;
+    h.price = l.mark;
+    by.set(l.symbol, h);
+  }
+  return [...by.values()].map((h) => ({ ...h, shares: Math.round(h.shares * 1000) / 1000 })).sort((a, b) => b.shares * b.price - a.shares * a.price);
 }
 
 async function simulate(feed: Feed, impl: Impl, rs: Ruleset, o: SimOptions, keepCandidates = false): Promise<RunOutput> {
@@ -144,7 +156,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
     key: string;
     state: RaceState;
     trades: Trade[];
-    rows: WeekRow[];
+    rows: RunWeek[];
     candidates: Map<string, CandidateRow[]>;
     factor: Map<string, number>;
     notes: string[];
@@ -355,14 +367,14 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       const res = run.impl.friday(run.state, fin) as RunResult & { week?: WeekRow };
       take(res);
       remember(run, w.last);
-      if (res.week) run.rows.push({ ...res.week, note: [res.week.note, `vix ${feed.asOf(feed.vix, w.last) ?? ""}`].filter(Boolean).join("; ") });
+      if (res.week) run.rows.push({ ...res.week, note: [res.week.note, `vix ${feed.asOf(feed.vix, w.last) ?? ""}`].filter(Boolean).join("; "), holdings: holdingsOf(run.state) });
     }
     lastFriday = w.last;
     if (!o.quiet && w.last.slice(0, 4) !== weeks[i + 1]?.last.slice(0, 4))
       for (const run of rr) console.log(`  ${year}: ${run.rs.name}: ${usd(run.state.lastValue)} (${pct(run.state.lastValue / o.capital - 1)})`);
   }
   return rr.map((run) => ({
-    weeks: run.rows.map((row) => finishWeek(row, run.trades)),
+    weeks: run.rows.map((row) => ({ ...finishWeek(row, run.trades), holdings: row.holdings })),
     trades: run.trades,
     candidates: run.candidates,
     state: run.state,
@@ -588,7 +600,7 @@ function writeRun(feed: Feed, rs: Ruleset, o: SimOptions, out: RunOutput, t0: nu
   };
   writeFileSync(join(dir, "run.json"), JSON.stringify(run));
   writeFileSync(join(dir, "summary.json"), JSON.stringify(summarize(run)));
-  writeFileSync(join(dir, "weeks.csv"), csv(out.weeks.map((w) => ({ ...w, spy_value: w.opp_value, spy_return: w.opp_return, spy_drawdown: w.opp_drawdown }))));
+  writeFileSync(join(dir, "weeks.csv"), csv(out.weeks.map((w) => ({ ...w, holdings: w.holdings?.map((h) => `${h.symbol} ${h.shares}@${h.price}`).join(" "), spy_value: w.opp_value, spy_return: w.opp_return, spy_drawdown: w.opp_drawdown }))));
   writeFileSync(join(dir, "trades.csv"), csv(out.trades));
   writeFileSync(join(dir, "graded.csv"), csv(graded.map(({ hold, ...g }) => ({ ...g, hold_close: hold?.close ?? null, hold_score: hold?.score ?? null, hold_edge: hold?.edge ?? null }))));
   writeFileSync(join(dir, "years.csv"), csv(years));

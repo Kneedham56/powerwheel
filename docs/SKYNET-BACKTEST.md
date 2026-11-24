@@ -233,8 +233,8 @@ It works the same way the race does (`src/lib/race.ts`, [RACE.md](RACE.md)), fro
 
 Each run writes `data/backtests/<ruleset>/<from>_<to>_<timestamp>/` (gitignored, never commit it):
 
-- `run.json`: everything the `/skynet` page reads (format 2): the ruleset, the options, the totals and years, every week, every trade, the graded trades and the end state. Runs from before format 2 don't appear on the page; rerun them to see them.
-- `weeks.csv`: one row per week: value, return, drawdown, leverage, premium, counts, and `spy_*` for the benchmark
+- `run.json`: everything the `/skynet` page reads (format 2): the ruleset, the options, the totals and years, every week, every trade, the graded trades and the end state. Runs from before format 2 don't appear on the page; rerun them to see them. Each week also lists `holdings`: the shares held at Friday's close (name, shares, close). The page shows them over a week's trades. Runs from before 2026-11-24 don't have them and show premium by ticker instead.
+- `weeks.csv`: one row per week: value, return, drawdown, leverage, premium, counts, holdings, and `spy_*` for the benchmark
 - `trades.csv`: every sale, buyback, expiry, assignment, share sale and skip, each with a note saying why
 - `graded.csv`: closed trades scored the way the race's review scores them (win = net premium after the move past the strike)
 - `years.csv`: the year-by-year summary
