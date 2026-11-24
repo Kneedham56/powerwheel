@@ -240,10 +240,12 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       if (b && b.length >= 2) sundayBars[s] = b; // techAt needs two bars (a name listed on Friday has one)
     }
     const meta: Record<string, CandidateMeta> = {};
+    const dvs: Record<string, number> = {};
     for (const s of tradable) {
       const ch = feed.chain(s, prev.last);
       const exps = new Set(ch.map((c) => c.expiry).filter((e) => e > prev.last));
       const dv = feed.dollarVolume(s, w.entry);
+      if (dv !== null) dvs[s] = dv;
       meta[s] = { sector: sectors[s], bigEnough: !!FUNDS[s] || (dv !== null && dv >= o.minDollarVolume), ...feed.ivOn(s, prev.last), weeklies: exps.size >= 2, termRatio: feed.termRatio(s, prev.last) };
     }
     const reports = new Map<string, CandidateRow[]>();
@@ -318,6 +320,8 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         px: holdPx,
         funds: funds.filter((f) => tradable.includes(f)),
         big: tradable.filter((s) => meta[s]?.bigEnough),
+        weeklies: tradable.filter((s) => meta[s]?.weeklies),
+        dv: dvs,
         stale: [...new Set(run.state.lots.filter(isHoldLot).map((l) => l.symbol))].filter((s) => !feed.barsAsOf(s, w.entry)),
         riskOn: regimeScale(run.rs, gMon) >= 1,
         first: i === first,

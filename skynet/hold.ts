@@ -42,6 +42,15 @@ export interface HoldLevers {
   noLeveraged?: boolean;
   /** only names passing the report's size test (20-day dollar volume, default true; funds always pass) */
   bigOnly?: boolean;
+  /**
+   * only names with weekly options that week (default false). The stock list is every name that ever had weeklies
+   * (2012–2026, delisted ones included), so this makes it point-in-time: a name that only got weeklies later, once it
+   * was already a winner, can't be bought before then. Like bigOnly, a holding that stops qualifying can be sold on a
+   * review week.
+   */
+  weekliesNow?: boolean;
+  /** only the N names with the most 20-day dollar volume that week (point-in-time size; funds always pass) */
+  topVolume?: number;
   /** the ruleset's regime gate (levers.spyMaDays, vixMax): when risk-off on a Monday, sell the book; buy back when risk-on */
   regime?: boolean;
   /** cost of each share fill, as a share of the price (default 0.0005) */
@@ -62,6 +71,10 @@ export interface HoldInput {
   funds: string[];
   /** names passing the size test */
   big: string[];
+  /** names with weekly options this week (2+ expiries in the next 15 days) */
+  weeklies?: string[];
+  /** 20-day dollar volume by symbol, as of Monday */
+  dv?: Record<string, number>;
   /** held names with no bar in the last 10 days (no longer trading) */
   stale: string[];
   /** the ruleset's regime gate as of the close before */
@@ -158,6 +171,9 @@ export function holdFeatures(sym: string, bars: Bar[], spy: Bar[] | undefined, d
 export function holdRanking(H: HoldLevers, inp: HoldInput, leveraged: Set<string>): string[] {
   const funds = new Set(inp.funds);
   const big = new Set(inp.big);
+  const weeklies = new Set(inp.weeklies ?? []);
+  const dv = inp.dv ?? {};
+  const topVol = H.topVolume ? new Set(Object.keys(dv).filter((x) => !funds.has(x)).sort((a, b) => dv[b] - dv[a]).slice(0, H.topVolume)) : null;
   const u = H.universe ?? "all";
   const keys = (Array.isArray(H.rank) ? H.rank : [H.rank ?? "mom12"]).map((k) => ({ k: k.replace(/^-/, ""), low: k.startsWith("-") }));
   const pool = Object.entries(inp.feats).filter(([sym, f]) => {
@@ -165,6 +181,8 @@ export function holdRanking(H: HoldLevers, inp: HoldInput, leveraged: Set<string
     if (Array.isArray(u) ? !u.includes(sym) : u === "stocks" ? funds.has(sym) : u === "funds" ? !funds.has(sym) : false) return false;
     if ((H.noLeveraged ?? true) && leveraged.has(sym)) return false;
     if ((H.bigOnly ?? true) && !funds.has(sym) && !big.has(sym) && !Array.isArray(u)) return false;
+    if (H.weekliesNow && !funds.has(sym) && !weeklies.has(sym)) return false;
+    if (topVol && !funds.has(sym) && !topVol.has(sym)) return false;
     if (inp.px[sym] === undefined) return false;
     if (keys.some(({ k }) => f[k] === null || f[k] === undefined)) return false;
     return !H.filters || Object.entries(H.filters).every(([k, [lo, hi]]) => typeof f[k] === "number" && (lo === null || f[k]! >= lo) && (hi === null || f[k]! <= hi));
