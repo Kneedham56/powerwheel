@@ -126,6 +126,7 @@ Beside the wheel, hold lots carry the theme `hold`: no covered calls, no floor s
 | `keep`, `review` | Sell a holding once it ranks below `keep` (default 3 × maxNames; a huge number = never sell). Review `weekly`, `monthly` (default, the first week of each month), `quarterly` or `yearly`. |
 | `filters`, `universe` | Each feature within [min, max]. `all` (default), `stocks`, `funds`, or a fixed list (`["SPY"]` is SPY buy and hold, the benchmark). |
 | `noLeveraged`, `bigOnly` | Leave out leveraged and inverse ETFs (default yes); only names passing the report's size test, 20-day dollar volume of $100M+ (default yes; funds always pass). |
+| `weekliesNow`, `topVolume` | Point-in-time universe checks (default off). `weekliesNow`: only names with weekly options that week. The stock list is every name that ever had weeklies, so without it the book can buy a future winner before it got them. `topVolume: N`: only the N names with the most 20-day dollar volume that week. Like `bigOnly`, a holding that stops qualifying can be sold on a review week. |
 | `regime` | Sell the book on a Monday when the ruleset's market gate (`spyMaDays`, `vixMax`) is off, and buy back once it's on. Off by default (Buffett doesn't time). |
 | `weight`, `minTrade`, `slip` | `equal` (default) or `rank` (best-ranked get more); spare money under this share of the account waits (default 0.02); cost per share fill. |
 
