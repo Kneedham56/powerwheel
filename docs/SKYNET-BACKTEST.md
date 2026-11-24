@@ -75,6 +75,8 @@ Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rules
 | `levers.vixMax=30` | Risk-off while VIX closed above this. |
 | `levers.riskOffScale=0.5` | When risk-off, the day's put exposure target is multiplied by this (default 0: no new puts). |
 | `levers.riskOffExit=all` / `losers` | Monday when risk-off: sell every share lot, or only those under cost. |
+| `levers.fridayDecide=true` | Kyle's Friday rule, at the close, for a put in the money: take assignment if the stock still passes Sunday's checks (trend qualifies, not in the never-sell zone, at or above its 20-day low); otherwise roll to next week's expiry at the lowest strike, at or under this one, that still nets a credit (a cent a share or more after the buyback); otherwise buy it back. `=floor` takes assignment whenever the stock is at or above its 20-day low (no trend check). Reads Friday's closing chain. |
+| `levers.fridayRollCalls=true` | Friday, for a covered call in the money: if the stock passes the same checks, roll to next week at the highest strike, at or over this one and the cost, that still nets a credit; otherwise let it be called away. |
 | `levers.core=1` (+ `levers.coreSymbol=QQQ`) | Core holding: after Monday's puts, buy SPY (or QQQ) until total exposure is this multiple of the account; all of it is sold when risk-off. Puts come first: the core doesn't count toward their target, only toward the 2x margin cap. It's never covered or stopped. |
 
 ### Sunday-report levers
@@ -157,7 +159,7 @@ It works the same way the race does (`src/lib/race.ts`, [RACE.md](RACE.md)), fro
 | Sunday report | Bars through Friday's close, Friday's closing chain for this Friday's expiry | Candidates, scores and target strikes (prep's `buildSunday`) |
 | Monday | Monday's closing quotes and prices | Covered calls on shares, then puts on the best candidates |
 | Wednesday (the day nearest it) | Wednesday's closing quotes; the floor check uses Tuesday's close | Take profit at 50%, cut below the floor, stop out shares, redeploy |
-| Friday (the week's last day) | Friday's close | Settle: assigned if the stock closed past the strike. Then stops, mark to market, score the week |
+| Friday (the week's last day) | Friday's close (and its option chain, for the Friday rule) | Settle: assigned if the stock closed past the strike (or the Friday rule rolls or buys back first). Then stops, mark to market, score the week |
 
 - **Fills:** sell at mid − ¼ of the spread, buy at mid + ¼ (the ruleset's `fillSpreadShare`). There's a $0.03 fee per contract on every option trade and on each assignment or call-away (`--fees`).
 - **Cash:** positive cash earns the 3-month T-bill (FRED DTB3). Negative cash is margin and pays the T-bill + 1.5%. `--no-interest` turns both off.

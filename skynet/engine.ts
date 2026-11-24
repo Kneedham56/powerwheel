@@ -32,8 +32,8 @@ import {
   type WednesdayInput,
   type WeekRow,
 } from "../src/lib/race";
-import { daysTo, midOf, type Bar, type OptionQuote } from "../src/lib/rules";
-import { realMarket, techAt } from "./logic";
+import { daysTo, midOf, rel, type Bar, type OptionQuote } from "../src/lib/rules";
+import { inNeverSellZone, realMarket, stage, techAt, trendQualifies } from "./logic";
 import type { Ruleset } from "./rulesets";
 
 export interface EngineOptions {
@@ -393,11 +393,100 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
   return { state: s, trades: L.trades, report: [] };
 }
 
+/**
+ * What the Friday decide rule reads (levers.fridayDecide / fridayRollCalls), all as of Friday's close: daily bars for
+ * the names with an expiring option in the money and for SPY, today's quotes for the expiring options, and next week's
+ * quotes to roll into.
+ */
+export interface FridayDecideInput {
+  bars: Record<string, Bar[]>;
+  spy: Bar[];
+  today: { puts: QuoteBook; calls: QuoteBook };
+  next: { expiry: string; puts: QuoteBook; calls: QuoteBook };
+}
+
+/** Would the stock still make Sunday's list? Trend qualifies, not in the never-sell zone, closed at or above its 20-day low (through yesterday). */
+function stillQualifies(rs: Ruleset, bars: Bar[] | undefined, spy: Bar[], close: number, floorOnly = false) {
+  if (!bars || bars.length < 2 || spy.length < 2) return false;
+  if (floorOnly) {
+    const f = stopFloor(rs, bars);
+    return f === null || close >= f;
+  }
+  const t = techAt(rs.rules, bars);
+  const m = techAt(rs.rules, spy);
+  if (!t || !m) return false;
+  const st = stage(rs.rules, rel(t.ret4w, m.ret4w), rel(t.ret13w, m.ret13w), t);
+  const floor = stopFloor(rs, bars);
+  return trendQualifies(st, t) && !inNeverSellZone(rs.rules, t) && (floor === null || close >= floor);
+}
+
+/**
+ * The Friday decide rule, before settlement: rolls or buys back the in-the-money options it doesn't want settled. What
+ * it leaves is settled as usual (puts assigned, calls called away). Fills: buy at mid + the fill share of the spread
+ * (or intrinsic + $0.05 with no quote), sell at mid − it; a roll needs the sale to beat the buyback by a cent a share.
+ */
+function fridayDecide(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, inp: FridayInput & { decide?: FridayDecideInput }) {
+  const D = inp.decide;
+  if (!D) return;
+  for (const x of [...s.options]) {
+    if (x.expiration > inp.date) continue;
+    const c = inp.closes[x.symbol];
+    if (c === undefined) continue;
+    const isPut = x.type === "put";
+    if (isPut ? !(rs.levers?.fridayDecide && c < x.strike) : !(rs.levers?.fridayRollCalls && c > x.strike)) continue;
+    const ok = stillQualifies(rs, D.bars[x.symbol], D.spy, c, isPut && rs.levers?.fridayDecide === "floor");
+    if (isPut && ok) continue; // take assignment
+    if (!isPut && !ok) continue; // let it be called away
+    const q0 = (isPut ? D.today.puts : D.today.calls)[x.symbol]?.find((q) => Math.abs(q.strike - x.strike) < 1e-9 && q.expiry === x.expiration);
+    const intrinsic = isPut ? x.strike - c : c - x.strike;
+    const buy = q0 && midOf(q0) !== null && q0.ask !== null ? Math.max(buyFill(rs, q0), r2(intrinsic)) : r2(intrinsic + 0.05);
+    const lot = s.lots.find((l) => l.symbol === x.symbol);
+    const book = (isPut ? D.next.puts : D.next.calls)[x.symbol] ?? [];
+    const credit = (q: OptionQuote) => midOf(q) !== null && sellFill(rs, q) - buy >= 0.01;
+    const roll = isPut
+      ? book.filter((q) => q.expiry === D.next.expiry && q.strike <= x.strike + 1e-9 && realMarket(rs.rules, q) && credit(q)).sort((a, b) => a.strike - b.strike)[0]
+      : book
+          .filter((q) => q.expiry === D.next.expiry && q.strike >= x.strike - 1e-9 && q.strike >= (lot?.cost ?? 0) - 1e-9 && realMarket(rs.rules, q) && credit(q))
+          .sort((a, b) => b.strike - a.strike)[0];
+    if (!isPut && !roll) continue; // no credit roll: the shares are called away
+    const cashOut = -buy * 100 * x.contracts - o.fees * x.contracts;
+    s.cash += cashOut;
+    s.options = s.options.filter((y) => y.id !== x.id);
+    const base = { symbol: x.symbol, type: x.type, strike: x.strike, expiration: x.expiration, qty: x.contracts, price: buy, cash: cashOut, position_id: x.id };
+    if (!roll) {
+      const kept = (x.price - buy) * 100 * x.contracts;
+      L.add("Bought back", { ...base, note: `Closed at ${r2(c)}, under the strike and failing Sunday's checks; no roll for a credit, bought back (${kept >= 0 ? "kept" : "lost"} ${usd(Math.abs(kept))})` });
+      continue;
+    }
+    const px = sellFill(rs, roll);
+    const id = L.id("o");
+    s.options.push({ id, type: x.type, symbol: x.symbol, theme: x.theme, strike: roll.strike, expiration: roll.expiry, contracts: x.contracts, price: px, opened: inp.date, week: s.week, setup: `Rolled from ${x.strike}` });
+    const cashIn = px * 100 * x.contracts - o.fees * x.contracts;
+    s.cash += cashIn;
+    const why = isPut ? "under the strike and failing Sunday's checks" : "over the strike with the trend intact";
+    L.add("Bought back", { ...base, note: `Closed at ${r2(c)}, ${why}: rolled to ${roll.strike} for ${roll.expiry}` });
+    L.add(isPut ? "Sold put" : "Sold call", {
+      symbol: x.symbol,
+      type: x.type,
+      strike: roll.strike,
+      expiration: roll.expiry,
+      qty: x.contracts,
+      price: px,
+      bid: roll.bid,
+      ask: roll.ask,
+      cash: cashIn,
+      position_id: id,
+      note: `Roll from ${x.strike}: net credit ${usd((px - buy) * 100 * x.contracts)}`,
+    });
+  }
+}
+
 /** Friday: settle expiring options at the close, stop out shares, mark to the close and score the week. `opp` is the benchmark's value. */
-export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: FridayInput): RunResult & { week: WeekRow } {
+export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: FridayInput & { decide?: FridayDecideInput }): RunResult & { week: WeekRow } {
   const s: RaceState = structuredClone(s0);
   if (!s.current) s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
+  fridayDecide(rs, o, s, L, inp);
   const counts: Record<string, number> = { puts_expired: 0, puts_assigned: 0, calls_expired: 0, calls_called: 0 };
   const missing: string[] = [];
 

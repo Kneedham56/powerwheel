@@ -86,6 +86,18 @@ export interface Levers {
   coreSymbol?: string;
   /** Changes to the Sunday report (skynet/logic.ts buildCandidates). Missing = the live prep. */
   prep?: PrepLevers;
+  /**
+   * Kyle's Friday decide rule, at Friday's close, for a put in the money: take assignment if the stock still passes
+   * Sunday's checks (trend qualifies, not in the never-sell zone, closed at or above its 20-day low); otherwise roll to
+   * next week at the lowest strike (at or under this one) that still nets a credit; otherwise buy it back.
+   * "floor": the looser test, take assignment whenever the stock closed at or above its 20-day low (no trend check).
+   */
+  fridayDecide?: boolean | "floor";
+  /**
+   * Friday, for a covered call in the money: if the stock passes the same checks (more upside likely), roll it to next
+   * week at the highest strike (at or over this one and the cost) that still nets a credit; otherwise let it be called.
+   */
+  fridayRollCalls?: boolean;
 }
 
 /**
