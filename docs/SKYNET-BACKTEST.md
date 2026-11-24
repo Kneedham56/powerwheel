@@ -79,6 +79,29 @@ Skynet-only levers live under `levers` on the ruleset (`Levers` in `skynet/rules
 | `levers.fridayRollCalls=true` | Friday, for a covered call in the money: if the stock passes the same checks, roll to next week at the highest strike, at or over this one and the cost, that still nets a credit; otherwise let it be called away. |
 | `levers.core=1` (+ `levers.coreSymbol=QQQ`) | Core holding: after Monday's puts, buy SPY (or QQQ) until total exposure is this multiple of the account; all of it is sold when risk-off. Puts come first: the core doesn't count toward their target, only toward the 2x margin cap. It's never covered or stopped. |
 
+### Swing levers (`levers.swing`, skynet/swing.ts)
+
+Shares bought low and sold high from the same Sunday report: Talon alone (`mode: "only"`, no puts or calls) or beside the wheel (`mode: "add"`, Zed). It's one JSON object, so it goes in a job file (`"levers.swing={...}"`); single fields can be changed with `--set levers.swing.rsiExit=65` once a ruleset has it.
+
+Decisions happen on the run days at the close. Between them, resting orders play out against the daily bars, oldest day first: a limit buy fills at the open if the stock opens under it, else at the limit; a target sells at the open on a gap over it, else at the target; the stop, RSI, stretch, trail and time exits read daily closes and sell at that close. Each share fill pays `slip` (default 0.05% of the price). Swing lots are ordinary share lots tagged `swing` (targets and stops are kept as multiples of the cost, so splits are safe); the wheel's own share rules leave them alone.
+
+| Field | What it does |
+|---|---|
+| `mode` | `only` (no options) or `add` (beside the wheel, sharing the account and the 2x cap). |
+| `exposure`, `perName`, `maxNames` | Most of the account in swing positions (1 = 1x), one position's share, most positions and resting buys at once. `volTarget` (e.g. 0.03) shrinks a position to perName × min(1, volTarget ÷ ATR%). |
+| `entryDays`, `entry`, `limitAtr` | Run days that may buy (default Monday). `close` buys at that close; `limit` rests a buy limitAtr × ATR under it until Friday's close. |
+| `filters`, `rank` | Each feature, as of the run day's close, within [min, max]: `pctB`, `rsi`, `vs50`, `vs200`, `offHigh`, `ret1w`, `ret4w`, `toFloor`, `atrPct`, `score`, `rs4`, `rs13`, `iv`, `rand` (a placebo). Order: the report's (score) or a feature, best first (`-rsi` = lowest first). |
+| `regime` | No new buys while the ruleset's market gate (`spyMaDays`, `vixMax`) is off. |
+| `targetAtr` / `targetPct` | A resting sell at cost × (1 + k × ATR%) or cost × (1 + pct). |
+| `stopAtr` / `stopPct` / `stopFloor` (+ `stopFloorAtr`, `stopTrail`) | A close under cost − k ATR, cost − pct, or the 20-day low at entry minus k ATR sells. `stopTrail` raises that floor with the 20-day low. |
+| `rsiExit`, `stretchAtr`, `trail`, `trailArm` | A close at RSI ≥ x or ≥ SMA20 + k ATR sells; with `trail` it arms a "close under the prior day's low" tripwire instead (also armed by a close trailArm ATR over cost). |
+| `maxDays`, `exitDowntrend` | Sell after N calendar days; sell on a Monday when Sunday's report calls it a Downtrend. |
+| `adoptAssigned`, `calls`, `callCoverage` | Wheel + swing: assigned shares become swing lots (these exits apply); `calls` still sells covered calls on them, at or over the swing target, the cost and the price, on callCoverage of the contracts. |
+| `putMoves` + `buyZone` | Wheel + swing: a name in the buy zone (Sunday report columns, e.g. `{"rsi":[null,40]}`) gets its put `putMoves` expected moves under the price instead of the usual strike. |
+| `midweekExit` | Wheel + swing: Wednesday, a covered swing lot that is stretched or hot (stretchAtr / rsiExit) is sold and its call bought back. |
+
+`data/skynet/tools/swingstats.js <run dir prefix>` lists a run's swing trades: count, win rate, average return, days held, why they closed, P&L by year.
+
 ### Sunday-report levers
 
 `levers.prep` changes the Sunday report itself (`buildCandidates` in `skynet/logic.ts`). The live prep's score weights are already in the ruleset (`rules.score.*`, e.g. `rules.score.premiumMax=30`). `levers.prep` adds what the live prep doesn't have. JSON values are parsed, so they go in a job file or a single `--set`:

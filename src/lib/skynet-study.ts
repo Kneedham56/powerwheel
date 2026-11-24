@@ -135,6 +135,7 @@ export function pooled(P: PooledSection, summaries: Sum[]): { rows: PooledRow[];
 /** Plain-words names for the settings that differ between rulesets. Anything else shows its path. */
 const LABELS: [RegExp, string][] = [
   [/^levers\.spyMaDays$/, "Market gate: no new puts while SPY closes under its N-day average"],
+  [/^ai\.coveredCall\.use$/, "Covered calls on assigned shares at all"],
   [/^levers\.ccCoverage$/, "Covered calls on this share of each assigned lot (the rest rides)"],
   [/^ai\.takeProfit$/, "Wednesday take profit: buy the put back once this much is captured"],
   [/^rules\.score\.trend\.(.+)$/, "Sunday score: points for the trend stage “$1”"],
@@ -147,6 +148,21 @@ const LABELS: [RegExp, string][] = [
   [/^levers\.prep\.maxScore$/, "Sunday score cap"],
   [/^levers\.prep\.filters\.term$/, "Earnings filter: skip when front-week IV ÷ next-week IV is above this"],
   [/^levers\.prep\.filters\.rv60$/, "Volatility limit: skip names whose 60-day realized volatility is above this (a year's worth)"],
+  [/^levers\.swing\.mode$/, "Swing: “only” = shares only, no options; “add” = beside the wheel"],
+  [/^levers\.swing\.filters\.rsi$/, "Swing buy: only when the 14-day RSI is in this range (a pullback)"],
+  [/^levers\.swing\.entryDays$/, "Swing buy: on these run days, at the close"],
+  [/^levers\.swing\.entry$/, "Swing buy: at the close, or a limit under it"],
+  [/^levers\.swing\.maxNames$/, "Swing: most positions at once"],
+  [/^levers\.swing\.perName$/, "Swing: each position's share of the account"],
+  [/^levers\.swing\.exposure$/, "Swing: most of the account in swing positions (1 = 1x)"],
+  [/^levers\.swing\.regime$/, "Swing: no new buys while the market gate is off"],
+  [/^levers\.swing\.rsiExit$/, "Swing sell: the first close with RSI at or over this"],
+  [/^levers\.swing\.stopFloor$/, "Swing sell: a close under the 20-day low (at entry)"],
+  [/^levers\.swing\.stopFloorAtr$/, "Swing stop: this many ATR under the 20-day low"],
+  [/^levers\.swing\.stopTrail$/, "Swing stop: trails the 20-day low as the stock climbs"],
+  [/^levers\.swing\.maxDays$/, "Swing sell: after this many days"],
+  [/^levers\.swing\.adoptAssigned$/, "Wheel + swing: assigned shares are run by the swing exits"],
+  [/^levers\.swing\.(.+)$/, "Swing: $1"],
 ];
 
 function flat(o: unknown, pre = "", out: Record<string, unknown> = {}) {
@@ -159,7 +175,10 @@ const show = (path: string, v: unknown) => {
   if (v === undefined) return "off";
   if (Array.isArray(v) && v.length === 3 && path.includes(".bonus.")) return `up to ${v[2]} pts`;
   if (Array.isArray(v) && v.length === 2 && path.includes(".filters.rv60")) return v[1] === null ? "off" : `${Math.round(Number(v[1]) * 100)}%`;
-  if (typeof v === "number" && /ccCoverage|takeProfit/.test(path)) return `${Math.round(v * 100)}%`;
+  if (typeof v === "number" && /ccCoverage|takeProfit|swing\.perName/.test(path)) return `${Math.round(v * 100)}%`;
+  if (Array.isArray(v) && v.length === 2 && path.includes("swing.filters.")) return `${v[0] ?? "…"} to ${v[1] ?? "…"}`;
+  if (Array.isArray(v) && path.endsWith("swing.entryDays")) return v.map((d) => String(d).slice(0, 3)).join(", ");
+  if (typeof v === "boolean" && /coveredCall\.use|swing\./.test(path)) return v ? "yes" : "no";
   if (typeof v === "number" && /spyMaDays/.test(path)) return `${v} days`;
   return Array.isArray(v) ? JSON.stringify(v) : String(v);
 };

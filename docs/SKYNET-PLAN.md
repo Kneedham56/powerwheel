@@ -41,8 +41,8 @@ The state of each phase is kept in the journal (below), not here. This file only
 4. **Sweeps.** Mix and match the levers, hundreds to thousands of runs, then read the patterns together.
 5. **Agentic loop.** Claude searches combinations alone within the guardrails below, logging everything, and reports back.
 6. **New strategies**, each a new champion. In order:
-   - swing trading (no options)
-   - the wheel + swing
+   - swing trading (no options): Talon (built, `levers.swing`)
+   - the wheel + swing: Zed (built)
    - buy and hold
    - long calls/puts
    - the wheel + long options

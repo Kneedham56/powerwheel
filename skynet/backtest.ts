@@ -38,10 +38,11 @@ import {
   type WeekRow,
 } from "../src/lib/race";
 import { AI, FUNDS, RULES, RULES_VERSION, type Bar, type OptionQuote } from "../src/lib/rules";
-import { friday, monday, wednesday, type EngineOptions, type FridayDecideInput, type Regime } from "./engine";
+import { friday, monday, ranked, regimeScale, wednesday, type EngineOptions, type FridayDecideInput, type Regime } from "./engine";
 import { addDays, DATA_DIR, Feed } from "./feed";
 import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
+import type { SwingInput, SwingState } from "./swing";
 import { summarize, type RunFile, type RunOptions, type Totals, type YearRow } from "./results";
 import { loadSectors } from "./sectors";
 
@@ -75,9 +76,9 @@ interface SundayIn {
 interface Impl {
   label: string;
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
-  monday(s: RaceState, inp: MondayInput, g?: Regime): RunResult;
-  wednesday(s: RaceState, inp: WednesdayInput, g?: Regime): RunResult;
-  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput }): RunResult;
+  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput }, g?: Regime): RunResult;
+  wednesday(s: RaceState, inp: WednesdayInput & { swing?: SwingInput }, g?: Regime): RunResult;
+  friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput }): RunResult;
 }
 
 function skynetImpl(rs: Ruleset, eo: EngineOptions): Impl {
@@ -269,6 +270,21 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
     };
     const gMon = regimeAt(w.entry);
     const gWed = regimeAt(w.mid);
+    const gFri = regimeAt(w.last);
+    // levers.swing: daily bars through the run day for the swing lots, resting buys and (on an entry day) the report's names
+    const swingIn = (run: Run, day: "monday" | "wednesday" | "friday", date: string, g: Regime, cands: CandidateRow[]): SwingInput | undefined => {
+      const S = run.rs.levers?.swing;
+      if (!S) return undefined;
+      const st = (run.state as RaceState & { swing?: SwingState }).swing;
+      const syms = new Set([...run.state.lots.map((l) => l.symbol), ...(st?.pending ?? []).map((p) => p.symbol)]);
+      if ((S.entryDays ?? ["monday"]).includes(day)) for (const c of ranked(run.rs, cands)) syms.add(c.symbol);
+      const bars: Record<string, Bar[]> = {};
+      for (const x of syms) {
+        const b = feed.barsAsOf(x, date, { n: 260 });
+        if (b) bars[x] = b;
+      }
+      return { bars, cands, riskOn: regimeScale(run.rs, g) >= 1 };
+    };
 
     for (const run of rr) {
       const cands = reports.get(run.key)!;
@@ -281,7 +297,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       // Monday
       splitCheck(run, w.entry);
       const monExpiry = targetExpiry(run.rs.rules, w.entry);
-      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)) }, gMon));
+      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands) }, gMon));
       remember(run, w.entry);
 
       // Wednesday (skipped in a week too short to have one between entry and expiry)
@@ -293,7 +309,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
           if (b) bars[s] = b;
         }
         const exp = run.state.current!.expiry;
-        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars }, gWed));
+        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars, swing: swingIn(run, "wednesday", w.mid, gWed, cands) }, gWed));
         remember(run, w.mid);
       }
 
@@ -309,7 +325,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         const b = feed.barsAsOf(s, w.last, { n: 60 });
         if (b) fBars[s] = b;
       }
-      const fin: FridayInput & { decide?: FridayDecideInput } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 } };
+      const fin: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput } = { date: w.last, closes: spotsOn(w.last, held(run)), bars: fBars, opp: { value: (o.capital * spy) / spyStart, flows: 0 }, swing: swingIn(run, "friday", w.last, gFri, cands) };
       if (run.rs.levers?.fridayDecide || run.rs.levers?.fridayRollCalls) fin.decide = fridayInputs(run.rs, run.state, w.last, fin.closes);
       const res = run.impl.friday(run.state, fin) as RunResult & { week?: WeekRow };
       take(res);

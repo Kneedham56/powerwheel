@@ -35,6 +35,7 @@ import {
 import { daysTo, midOf, rel, type Bar, type OptionQuote } from "../src/lib/rules";
 import { inNeverSellZone, realMarket, stage, techAt, trendQualifies } from "./logic";
 import type { Ruleset } from "./rulesets";
+import { adoptLot, inBuyZone, isSwingLot, swingCallFloor, swingEnter, swingHot, swingOf, swingWalk, type SwingInput } from "./swing";
 
 export interface EngineOptions {
   /** dollars per contract on each option trade and on assignment or call-away (0 = the race) */
@@ -180,7 +181,10 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
       continue;
     }
     const px0 = spots[c.symbol] ?? c.last;
-    const target = roc === null ? aiTarget(rs, c) : px0;
+    // levers.swing.putMoves: a buy-zone name's put goes nearer the money (more premium, aiming to be assigned low)
+    const pm = rs.levers?.swing?.putMoves;
+    const zone = pm !== undefined && c.exp_move !== null && inBuyZone(rs, c);
+    const target = zone ? c.last - pm! * c.exp_move! : roc === null ? aiTarget(rs, c) : px0;
     const ok =
       delta !== null
         ? book
@@ -242,8 +246,9 @@ function sellPuts(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, cands:
 function sellCalls(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, quotes: QuoteBook, minStrike: Record<string, number>, date: string, expiry: string) {
   const CC = rs.ai.coveredCall;
   for (const l of s.lots) {
-    if (l.theme === CORE) continue;
-    const n = Math.floor(Math.floor(l.shares / 100) * (rs.levers?.ccCoverage ?? 1) + 1e-9);
+    if (l.theme === CORE || (isSwingLot(l) && !swingOf(rs)?.calls)) continue;
+    const cover = isSwingLot(l) ? (swingOf(rs)?.callCoverage ?? rs.levers?.ccCoverage ?? 1) : (rs.levers?.ccCoverage ?? 1);
+    const n = Math.floor(Math.floor(l.shares / 100) * cover + 1e-9);
     if (n < 1 || s.options.some((x) => x.type === "call" && x.symbol === l.symbol)) continue;
     const book = quotes[l.symbol];
     if (book === undefined) continue;
@@ -259,7 +264,7 @@ function sellCalls(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, quote
     s.options.push({ id, type: "call", symbol: l.symbol, theme: l.theme, strike: q.strike, expiration: q.expiry, contracts: n, price: px, opened: date, week: s.week, setup: "Covered call" });
     const cash = px * 100 * n - o.fees * n;
     s.cash += cash;
-    L.add("Sold call", { symbol: l.symbol, type: "call", strike: q.strike, expiration: q.expiry, qty: n, price: px, bid: q.bid, ask: q.ask, cash, position_id: id, note: `Covered call at or above cost ${r2(l.cost)} and one expected move` });
+    L.add("Sold call", { symbol: l.symbol, type: "call", strike: q.strike, expiration: q.expiry, qty: n, price: px, bid: q.bid, ask: q.ask, cash, position_id: id, note: isSwingLot(l) ? `Swing lot: covered call at or above ${r2(floor)} (the swing target, cost or price)` : `Covered call at or above cost ${r2(l.cost)} and one expected move` });
   }
 }
 
@@ -309,14 +314,16 @@ function adjustCore(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, spot
   }
 }
 
-export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput, g?: Regime): RunResult {
+export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: MondayInput & { swing?: SwingInput }, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
   for (const l of s.lots) if (inp.spots[l.symbol] !== undefined) l.mark = inp.spots[l.symbol];
+  const only = swingOf(rs)?.mode === "only";
+  swingWalk(rs, s, L, "monday", inp.date, inp.spots, inp.swing);
 
   for (const l of [...s.lots]) {
-    if (l.theme === CORE) continue;
+    if (l.theme === CORE || isSwingLot(l)) continue;
     const c = inp.candidates.find((x) => x.symbol === l.symbol);
     l.downtrendWeeks = c?.stage === "Downtrend" ? (l.downtrendWeeks ?? 0) + 1 : 0;
     if (l.downtrendWeeks >= 2 && !rs.levers?.holdUntilGreen) sellLot(rs, o, s, L, l, l.mark, "Downtrend two Sundays in a row", inp.quotes.calls);
@@ -324,16 +331,17 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
 
   const exit = rs.levers?.riskOffExit;
   if (exit && regimeScale(rs, g) < 1)
-    for (const l of [...s.lots]) if (l.theme !== CORE && (exit === "all" || l.mark < l.cost)) sellLot(rs, o, s, L, l, l.mark, "Risk-off: out of the shares", inp.quotes.calls);
+    for (const l of [...s.lots]) if (l.theme !== CORE && !isSwingLot(l) && (exit === "all" || l.mark < l.cost)) sellLot(rs, o, s, L, l, l.mark, "Risk-off: out of the shares", inp.quotes.calls);
 
   const minStrike: Record<string, number> = {};
   for (const l of s.lots) {
     const c = inp.candidates.find((x) => x.symbol === l.symbol);
-    minStrike[l.symbol] = Math.max(l.cost, l.mark + rs.ai.coveredCall.moves * (c?.exp_move ?? l.mark * 0.03));
+    minStrike[l.symbol] = isSwingLot(l) ? swingCallFloor(rs, l) : Math.max(l.cost, l.mark + rs.ai.coveredCall.moves * (c?.exp_move ?? l.mark * 0.03));
   }
-  if (rs.ai.coveredCall.use) sellCalls(rs, o, s, L, inp.quotes.calls, minStrike, inp.date, inp.expiry);
+  if (rs.ai.coveredCall.use && !only) sellCalls(rs, o, s, L, inp.quotes.calls, minStrike, inp.date, inp.expiry);
   const value = accountValue(s, inp.spots);
-  sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday * regimeScale(rs, g), "monday");
+  if (!only) sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, inp.expiry, rs.ai.exposure.monday * regimeScale(rs, g), "monday");
+  swingEnter(rs, o.maxLeverage, s, L, "monday", inp.date, ranked(rs, inp.candidates), inp.spots, inp.swing);
   adjustCore(rs, o, s, L, inp.spots, inp.date, g);
 
   s.current = { week: s.week, opened: inp.date, expiry: inp.expiry, valueAtOpen: r2(value) };
@@ -341,11 +349,12 @@ export function monday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Monday
   return { state: s, trades: L.trades, report: [] };
 }
 
-export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: WednesdayInput, g?: Regime): RunResult {
+export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: WednesdayInput & { swing?: SwingInput }, g?: Regime): RunResult {
   const s: RaceState = structuredClone(s0);
   if (!s.current) throw new Error(`wednesday ${inp.date}: no week is open`);
   const L = new Ledger(s, inp.date, rs.name);
   for (const l of s.lots) if (inp.spots[l.symbol] !== undefined) l.mark = inp.spots[l.symbol];
+  swingWalk(rs, s, L, "wednesday", inp.date, inp.spots, inp.swing);
 
   for (const x of s.options.filter((y) => y.type === "put")) {
     const q = inp.quotes.puts[x.symbol]?.find((y) => Math.abs(y.strike - x.strike) < 1e-9 && y.expiry === x.expiration);
@@ -378,9 +387,17 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
     });
   }
 
+  const covered = new Set(s.options.filter((x) => x.type === "call").map((x) => x.symbol));
+  if (swingOf(rs)?.midweekExit)
+    for (const l of [...s.lots]) {
+      if (!isSwingLot(l) || !covered.has(l.symbol)) continue;
+      const why = swingHot(rs, inp.swing?.bars[l.symbol]);
+      if (why && inp.spots[l.symbol] !== undefined) sellLot(rs, o, s, L, l, inp.spots[l.symbol], `Swing: ${why} on Wednesday; out before Friday`, inp.quotes.calls);
+    }
   if (rs.ai.stopBelowFloor && !rs.levers?.holdUntilGreen) {
     for (const l of [...s.lots]) {
-      if (l.theme === CORE || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
+      // swing lots keep their own stop, except while a covered call is open (the swing walk leaves those alone)
+      if (l.theme === CORE || (isSwingLot(l) && !covered.has(l.symbol)) || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const bars = inp.bars[l.symbol];
       const floor = stopFloor(rs, bars);
       const close = bars?.at(-1)?.close;
@@ -388,7 +405,8 @@ export function wednesday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Wed
     }
   }
 
-  if (rs.levers?.wedRedeploy !== false) sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday * regimeScale(rs, g), "wednesday");
+  if (rs.levers?.wedRedeploy !== false && swingOf(rs)?.mode !== "only") sellPuts(rs, o, s, L, inp.candidates, inp.quotes.puts, inp.spots, inp.date, s.current.expiry, rs.ai.exposure.wednesday * regimeScale(rs, g), "wednesday");
+  swingEnter(rs, o.maxLeverage, s, L, "wednesday", inp.date, ranked(rs, inp.candidates), inp.spots, inp.swing);
   s.lastRun = { kind: "wednesday", at: inp.date, week: s.week };
   return { state: s, trades: L.trades, report: [] };
 }
@@ -482,10 +500,11 @@ function fridayDecide(rs: Ruleset, o: EngineOptions, s: RaceState, L: Ledger, in
 }
 
 /** Friday: settle expiring options at the close, stop out shares, mark to the close and score the week. `opp` is the benchmark's value. */
-export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: FridayInput & { decide?: FridayDecideInput }): RunResult & { week: WeekRow } {
+export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput }): RunResult & { week: WeekRow } {
   const s: RaceState = structuredClone(s0);
   if (!s.current) s.week += 1;
   const L = new Ledger(s, inp.date, rs.name);
+  swingWalk(rs, s, L, "friday", inp.date, inp.closes, inp.swing);
   fridayDecide(rs, o, s, L, inp);
   const counts: Record<string, number> = { puts_expired: 0, puts_assigned: 0, calls_expired: 0, calls_called: 0 };
   const missing: string[] = [];
@@ -511,6 +530,7 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
         s.cash += cash;
         const id = L.id("l");
         s.lots.push({ id, symbol: x.symbol, theme: x.theme, shares: 100 * x.contracts, cost: x.strike, mark: c, opened: x.expiration });
+        adoptLot(rs, s.lots.at(-1)!, inp.bars?.[x.symbol], inp.date);
         counts.puts_assigned += 1;
         L.add("Assigned", { ...base, cash, note: `Closed at ${r2(c)}, under the strike: bought ${100 * x.contracts} shares at ${x.strike}` });
       } else {
@@ -543,13 +563,14 @@ export function friday(rs: Ruleset, o: EngineOptions, s0: RaceState, inp: Friday
   }
   if (rs.ai.stopBelowFloor && !rs.levers?.holdUntilGreen && inp.bars) {
     for (const l of [...s.lots]) {
-      if (l.theme === CORE || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
+      if (l.theme === CORE || (isSwingLot(l) && !s.options.some((x) => x.type === "call" && x.symbol === l.symbol)) || inStopGrace(l.opened, inp.date, rs.ai.stopGraceDays)) continue;
       const floor = stopFloor(rs, inp.bars[l.symbol]);
       const close = inp.closes[l.symbol];
       if (stopHit(rs, l, close, floor)) sellLot(rs, o, s, L, l, close!, stopWhy(rs, l, close!, floor));
     }
   }
 
+  swingEnter(rs, o.maxLeverage, s, L, "friday", inp.date, inp.swing ? ranked(rs, inp.swing.cands) : [], inp.closes, inp.swing);
   const value = accountValue(s);
   s.peak = Math.max(s.peak, value);
   const dd = value / s.peak - 1;
