@@ -44,6 +44,7 @@ import { buildCandidates, targetExpiry, type CandidateMeta } from "./logic";
 import { getRuleset, liveRuleset, withOverrides, type Ruleset } from "./rulesets";
 import { holdFeatures, isHoldLot, type HoldFeatures, type HoldInput } from "./hold";
 import type { SwingInput, SwingState } from "./swing";
+import { longFeatures, type LongMidInput, type LongMondayInput, type LongState } from "./longs";
 import { summarize, type Holding, type RunFile, type RunWeek, type RunOptions, type Totals, type YearRow } from "./results";
 import { loadSectors } from "./sectors";
 
@@ -77,8 +78,8 @@ interface SundayIn {
 interface Impl {
   label: string;
   candidates(inp: SundayIn): { expiry: string; candidates: CandidateRow[] };
-  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput }, g?: Regime): RunResult;
-  wednesday(s: RaceState, inp: WednesdayInput & { swing?: SwingInput }, g?: Regime): RunResult;
+  monday(s: RaceState, inp: MondayInput & { swing?: SwingInput; hold?: HoldInput; longs?: LongMondayInput }, g?: Regime): RunResult;
+  wednesday(s: RaceState, inp: WednesdayInput & { swing?: SwingInput; longs?: LongMidInput }, g?: Regime): RunResult;
   friday(s: RaceState, inp: FridayInput & { decide?: FridayDecideInput; swing?: SwingInput }): RunResult;
 }
 
@@ -207,7 +208,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       loadedYear = year;
     }
 
-    const held = (r: Run) => [...new Set([...r.state.lots.map((l) => l.symbol), ...r.state.options.map((x) => x.symbol)])];
+    const held = (r: Run) => [...new Set([...r.state.lots.map((l) => l.symbol), ...r.state.options.map((x) => x.symbol), ...((r.state as LongState).longs ?? []).map((p) => p.symbol)])];
     // splits: shares and open options follow the stock (raw ÷ split-adjusted changes by the ratio). The factor is
     // remembered after every run for what's held, and forgotten once a name isn't, so an old split never reaches a
     // later position.
@@ -219,6 +220,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
         r.state = structuredClone(r.state);
         for (const l of r.state.lots.filter((x) => x.symbol === sym)) Object.assign(l, { shares: l.shares * m, cost: l.cost / m, mark: l.mark / m });
         for (const x of r.state.options.filter((y) => y.symbol === sym)) Object.assign(x, { strike: x.strike / m, contracts: x.contracts * m, price: x.price / m });
+        for (const x of ((r.state as LongState).longs ?? []).filter((y) => y.symbol === sym)) Object.assign(x, { strike: x.strike / m, contracts: x.contracts * m, cost: x.cost / m });
         r.notes.push(`${date}: ${sym} split ${m.toFixed(3)} for 1; shares and open options adjusted`);
       }
     };
@@ -323,6 +325,26 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       };
     };
 
+    // levers.longs: features for the names with weeklies that pass the size test (bars through Friday, once a week, shared)
+    const longFeatsBy = new Map<string, Record<string, Record<string, number | null>>>(); // by report (the score feature)
+    const longBig = tradable.filter((s) => meta[s]?.bigEnough && meta[s]?.weeklies && sundayBars[s]);
+    const longBooks = (date: string) => (sym: string, type: "call" | "put") => feed.book(sym, date, type, w.last);
+    const longsMon = (run: Run): LongMondayInput | undefined => {
+      if (!run.rs.levers?.longs) return undefined;
+      let feats = longFeatsBy.get(run.key);
+      if (!feats) {
+        feats = {};
+        const cand = new Map(reports.get(run.key)!.map((c) => [c.symbol, c]));
+        const vix = feed.asOf(feed.vix, prev.last);
+        for (const s of longBig) {
+          const f = longFeatures(run.rs.rules, s, sundayBars[s], sundayBars.SPY, w.entry, { iv: meta[s].iv ?? null, ivRank: meta[s].ivRank ?? null, termRatio: meta[s].termRatio }, cand.get(s), vix);
+          if (f) feats[s] = f;
+        }
+        longFeatsBy.set(run.key, feats);
+      }
+      return { feats, big: longBig.filter((s) => feats![s]), funds, expiry: w.last, books: longBooks(w.entry), spots: spotsOn(w.entry, longBig), riskOn: regimeScale(run.rs, gMon) >= 1 };
+    };
+
     for (const run of rr) {
       const cands = reports.get(run.key)!;
       if (keepCandidates) run.candidates.set(runDate, cands);
@@ -334,7 +356,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
       // Monday
       splitCheck(run, w.entry);
       const monExpiry = targetExpiry(run.rs.rules, w.entry);
-      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run) }, gMon));
+      take(run.impl.monday(run.state, { date: w.entry, expiry: monExpiry, candidates: cands, quotes: { puts: putBook(w.entry, monExpiry), calls: callBook(run, w.entry, monExpiry) }, spots: spotsOn(w.entry, held(run)), swing: swingIn(run, "monday", w.entry, gMon, cands), hold: holdIn(run), longs: longsMon(run) }, gMon));
       remember(run, w.entry);
 
       // Wednesday (skipped in a week too short to have one between entry and expiry)
@@ -346,7 +368,7 @@ async function simulateMany(feed: Feed, runs: { impl: Impl; rs: Ruleset }[], o: 
           if (b) bars[s] = b;
         }
         const exp = run.state.current!.expiry;
-        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars, swing: swingIn(run, "wednesday", w.mid, gWed, cands) }, gWed));
+        take(run.impl.wednesday(run.state, { date: w.mid, candidates: cands, quotes: { puts: putBook(w.mid, exp), calls: callBook(run, w.mid, exp) }, spots: spotsOn(w.mid, held(run)), bars, swing: swingIn(run, "wednesday", w.mid, gWed, cands), longs: run.rs.levers?.longs ? { books: longBooks(w.mid), spots: spotsOn(w.mid, held(run)) } : undefined }, gWed));
         remember(run, w.mid);
       }
 

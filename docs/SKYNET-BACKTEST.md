@@ -17,6 +17,7 @@ npm run skynet -- parity [--from 2024-01-01] [--to 2024-06-30]     # Skynet's co
 npm run skynet -- sectors                                         # data/sectors.json from the prep reports
 npm run skynet -- picks --ruleset nasus [--set ...]               # pick study: every Sunday candidate and its put's outcome
 npm run skynet -- regime                                          # the adaptive report's regime features for every Sunday
+npm run skynet -- longs-study --ruleset azir                      # long-option study: what buying each name's weekly call and put paid
 ```
 
 - The backtest reads Parquet through an in-memory DuckDB, so it runs while a pull holds `data/skynet.duckdb`.
@@ -55,6 +56,10 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - **Zed** is Azir with no covered calls plus a 0.3x Talon swing book.
 - **Braum** is buy and hold, no options (`levers.hold`): all the cash in 10 stocks ranked by steady up weeks plus 12-month momentum, an equal share each. Once a quarter a holding that has fallen out of the top 30 is sold, and the money buys the best stock not held. Nothing else sells.
 - **Ornn** is Braum's book on the cash (1x) with Azir's wheel on the margin above it (up to the 2x cap).
+- **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
+- **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
+- **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
+- **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
 
 ## Variants and levers
 
@@ -123,6 +128,24 @@ Beside the wheel, hold lots carry the theme `hold`: no covered calls, no floor s
 | `noLeveraged`, `bigOnly` | Leave out leveraged and inverse ETFs (default yes); only names passing the report's size test, 20-day dollar volume of $100M+ (default yes; funds always pass). |
 | `regime` | Sell the book on a Monday when the ruleset's market gate (`spyMaDays`, `vixMax`) is off, and buy back once it's on. Off by default (Buffett doesn't time). |
 | `weight`, `minTrade`, `slip` | `equal` (default) or `rank` (best-ranked get more); spare money under this share of the account waits (default 0.02); cost per share fill. |
+
+### Long-option levers (`levers.longs`, skynet/longs.ts)
+
+Weekly calls and puts bought, alone (`mode: "only"`, no wheel) or beside the wheel (`mode: "add"`, sharing the account). One JSON object, so it goes in a job file (`"levers.longs={...}"`).
+
+Monday at the close each side (`calls`, `puts`) ranks the names with weeklies that pass the size test, on features from bars through Friday's close, and buys the top `maxNames` that pass its filters and have a real market: the contract expiring that Friday (no Friday expiry that week, no buy), at mid + ¼ spread. Each position gets `budget` ÷ `maxNames` of the account value in premium, in whole contracts. Wednesday a position can be sold at mid − ¼ spread (`takeProfit`, `stopLoss`, `wedExit`). Friday what's left settles at its intrinsic value from the close, as cash (no shares change hands). The $0.03 fee is paid on each buy and sell, and on a settlement worth something.
+
+The positions are kept apart from the wheel's short options (`longs` in the state) and are always gone by Friday's close, so the week's account value is right. In between, the account value the wheel reads on Wednesday leaves them out (small: one week's premium). The stored chains keep puts from 0.5x to 1.05x the price and calls from 0.95x to 1.6x, so an option that has gone deep in the money is priced on Wednesday by put-call parity from the other side at the same strike.
+
+| Field | What it does |
+|---|---|
+| `mode` | `only` or `add`. |
+| `calls`, `puts` | One side each: `maxNames`, `budget` (premium each Monday as a share of the account value), `strike` (`atm`, default: nearest the price; `otm` / `itm`: nearest \|delta\| 0.3 / 0.7; or a delta number), `rank` (best first, `-x` lowest first, a list averages the ranks), `filters` ([min, max] per feature), `universe` (`big`, default, `stocks`, `funds`, or `report`: the Sunday report's eligible names), `symbols` (a fixed list), `regime` (`on`: buy only while the ruleset's market gate is on; `off`: only while it's off), `maxSpread` (spread ÷ mid), `minPrice` (per share, default 0.05). |
+| features | `ret1w`, `ret4w`, `ret13w`, `vs50`, `vs200`, `pctB`, `rsi`, `offHigh`, `rv20`, `atrPct`, `rs4`, `rs13` (vs SPY), `mom12`, `smooth`, `vol` (as in the hold book), `iv`, `ivRank`, `ivrv`, `term`, `score` (the Sunday report's, null if not eligible), `stageN` (Leader 3 … Downtrend −2), the market (`spyVs200`, `spyRet4w`, `vix`), placebos `rand` and `fixed`. |
+| `takeProfit`, `stopLoss`, `wedExit` | Wednesday: sell a position up at least this share, down at least this share, or every position. A contract with no bid is held to Friday. |
+| `noLeveraged` | Leave out leveraged and inverse ETFs (default yes). |
+
+**Long-option study.** `npm run skynet -- longs-study --ruleset azir` writes `data/skynet/longs-<ruleset>.jsonl`: one row per name per week (names with weeklies passing the size test), with the features above and, for the call and the put at three strikes (at the money, \|delta\| ≈ 0.3 out, ≈ 0.7 in), the Monday fill and the return per dollar of premium held to Friday (`_fri`) or sold Wednesday (`_wed`). `data/skynet/tools/longs.js` prints returns by feature decile (train vs validate), `longtopk.js` screens a ranking rule compounded at a weekly budget, and `longconc.js` shows how much of a rule's profit comes from its best trades. Check a ranking idea there before a backtest.
 
 ### Sunday-report levers
 

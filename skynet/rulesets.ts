@@ -10,6 +10,7 @@
  */
 import type { AI, RULES } from "../src/lib/rules";
 import type { HoldLevers } from "./hold";
+import type { LongLevers } from "./longs";
 import type { SwingLevers } from "./swing";
 
 /** Deep copy of a type with readonly and literal types widened, so variants can change any value. */
@@ -104,6 +105,8 @@ export interface Levers {
   swing?: SwingLevers;
   /** Buy and hold (skynet/hold.ts): the cash in the best-ranked names, sold only for a better one; alone ("only") or with the wheel on the margin above it ("add"). */
   hold?: HoldLevers;
+  /** Long options (skynet/longs.ts): buy weekly calls and puts, alone ("only") or beside the wheel ("add"). */
+  longs?: LongLevers;
 }
 
 /**
@@ -189,7 +192,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn", "Jhin", "Xayah"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {
@@ -394,7 +397,47 @@ export const ORNN: Ruleset = {
   levers: { ...AZIR.levers, hold: { ...BRAUM.levers!.hold!, mode: "add" } },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN };
+/**
+ * Jhin: weekly long calls only, no wheel (Claude's sixth solo round, 2026-11-24). Every Monday at the close it buys
+ * calls expiring that Friday on 5 stocks (no funds, no leveraged ETFs, 20-day dollar volume $100M+, weeklies), ranked
+ * like Braum: the average of two ranks, `smooth` (share of up weeks in the last year) and `mom12` (12-month return
+ * skipping the last month). The strike nearest 0.3 delta out of the money, only contracts with a spread under 8% of
+ * the price and costing $0.30+ a share, bought at mid + ¼ spread. 3% of the account in premium a week, an equal share
+ * each; held to Friday's close and settled at intrinsic value. About 70% of trades lose (most expire worthless); a few
+ * 10–30x weeks pay for them. Pooled over 11 universes: 37.9%/yr, max drawdown −24%, worst year +13% (Azir 16.5%,
+ * SPY 12.3%). Random calls at the same budget make 21%, the same 5 names never changing 14%. Long puts lose in every
+ * form tried (bearish names, oversold, overbought, SPY in a downtrend), so Jhin buys none. The budget is the dial:
+ * 2% gives 24% / −16%, 4% gives 49% / −32% (about SPY's drawdown).
+ */
+export const JHIN: Ruleset = {
+  ...AZIR,
+  name: "Jhin",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Long calls only: each Monday, 3% of the account on 0.3-delta calls expiring Friday on the 5 stocks ranked best by steady up weeks + 12-month momentum. No wheel, no puts.",
+  levers: {
+    ...AZIR.levers,
+    longs: { mode: "only", calls: { maxNames: 5, budget: 0.03, strike: "otm", rank: ["smooth", "mom12"], universe: "stocks", maxSpread: 0.08, minPrice: 0.3 } },
+  },
+};
+
+/**
+ * Xayah: Azir's wheel with no covered calls, plus Jhin's call book at 2% of the account a week (Claude's sixth solo
+ * round, 2026-11-24). The calls are bought after the Monday puts and are paid from cash; the wheel keeps the 2x margin
+ * cap. Pooled over 11 universes: 41.8%/yr, max drawdown −41% (Azir 16.5% / −30%; Azir + random calls 27.7%). The
+ * wheel adds drawdown more than return: Jhin alone at a 4% budget makes more (48.5%) with less drawdown (−32%).
+ */
+export const XAYAH: Ruleset = {
+  ...AZIR,
+  name: "Xayah",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Azir with no covered calls + Jhin's call book at 2% of the account a week.",
+  ai: { ...AZIR.ai, coveredCall: { ...AZIR.ai.coveredCall, use: false } },
+  levers: { ...AZIR.levers, longs: { ...JHIN.levers!.longs!, mode: "add", calls: { ...JHIN.levers!.longs!.calls!, budget: 0.02 } } },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN, jhin: JHIN, xayah: XAYAH };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];
