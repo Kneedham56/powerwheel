@@ -60,6 +60,8 @@ Every run trades the same account (`ACCOUNT` in `skynet/backtest.ts`), so runs c
 - **Jhin** buys weekly calls only, no wheel and no puts (`levers.longs`): every Monday, 3% of the account in premium on 0.3-delta calls expiring that Friday, on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum), held to Friday. About 70% of the trades lose; a few 10–30x weeks pay for them.
 - **Xayah** is Azir with no covered calls plus Jhin's call book at 2% of the account a week.
 - **Zilean** is Azir with longer-dated puts (`levers.dte`): the Thursday/Friday expiry nearest 45 days out, the strike at 0.30 delta, bought back on the Wednesday with 21 days or fewer left. Lower drawdowns than Azir, lower return. It needs the long chains: `npm run skynet -- cache --long`.
+- **Lux** holds LEAPS calls only, no wheel (`levers.leaps`): calls about 400 days out at 0.70 delta on the 5 stocks Braum's ranking likes best, sized to 1x stock-like exposure, sold and reopened with 120 days left, names reviewed each quarter. About Jhin's return with twice the drawdown. The long-dated wheel and long puts lost in every form.
+- **Taric** is Azir with no covered calls plus Lux's book beside it.
 
 ## Variants and levers
 
@@ -150,6 +152,21 @@ The positions are kept apart from the wheel's short options (`longs` in the stat
 | `noLeveraged` | Leave out leveraged and inverse ETFs (default yes). |
 
 **Long-option study.** `npm run skynet -- longs-study --ruleset azir` writes `data/skynet/longs-<ruleset>.jsonl`: one row per name per week (names with weeklies passing the size test), with the features above and, for the call and the put at three strikes (at the money, \|delta\| ≈ 0.3 out, ≈ 0.7 in), the Monday fill and the return per dollar of premium held to Friday (`_fri`) or sold Wednesday (`_wed`). `data/skynet/tools/longs.js` prints returns by feature decile (train vs validate), `longtopk.js` screens a ranking rule compounded at a weekly budget, and `longconc.js` shows how much of a rule's profit comes from its best trades. Check a ranking idea there before a backtest.
+
+### Long-dated option levers (`levers.leaps`, skynet/leaps.ts)
+
+Options months out, held for months: LEAPS calls and puts bought, the long-dated wheel (puts sold months out, then calls on the assigned shares), and calls sold against LEAPS calls (the "poor man's covered call"). Alone (`mode: "only"`, no wheel) or beside the rest of the ruleset (`mode: "add"`, sharing the account). One JSON object, so it goes in a job file (`"levers.leaps={...}"`).
+
+Everything acts Monday at the close. Names are ranked like the hold and long-call books (features from bars through Friday's close, names with weeklies passing the size test that week). Fills are at mid ± the ruleset's fill share of the spread (`ai.fillSpreadShare`), never below the bid, plus the per-contract fee. Friday, what expires settles (long: intrinsic in cash; short put in the money: assigned into shares; covered call in the money: called away; short call: closed at intrinsic), and every open position is marked at that day's mid (else put-call parity, else intrinsic plus the shrinking time value), so the week's account value includes them. The positions live apart from the wheel (`leaps` in the state), so its covered calls and stops never touch them. The chains are read straight from the parquet store for each Monday (up to 1000 days out, |delta| 0.03–0.98), so no cache step is needed.
+
+| Book | Fields |
+|---|---|
+| `calls`, `puts` (bought) | `maxNames`, `rank`, `filters`, `universe`, `symbols`, `regime` (as in `levers.longs`); `dte: [min, max]` and `target` (expiry nearest it); `delta` (\|delta\| of the strike, 0.8 = in the money); `maxSpread` (default 0.1); `sizing` `delta` (default: delta × shares = `alloc` × account ÷ maxNames, so `alloc: 1` is stock-like 1x) or `premium`; `rollAt` (sell and reopen with this many days left); `review` (default quarterly) and `keep` (default 3 × maxNames): a name ranked below `keep` is sold for a better one; `takeProfit`, `stopLoss`. |
+| `shortPuts` (the long-dated wheel) | The same picking fields; `alloc` (collateral per name = alloc × account ÷ maxNames); `takeProfit` (buy back once this share of the premium is kept); `rollAt`; `maxExposure` (open collateral + assigned shares, default 1x the account); `stop` (sell assigned shares and their call at this loss). |
+| `coveredCalls` | On assigned shares: `dte`, `target`, `delta`, `aboveCost` (never a strike under the shares' cost, default true), `takeProfit`, `maxSpread`. |
+| `shortCalls` | Against each long call: `dte` (`[0, 7]` = this Friday's weekly), `target`, `delta`, `takeProfit`. The strike is at or above both the long call's strike and the price, and it expires before the long call. |
+
+Known approximations: with `mode: "add"`, the wheel's Monday sizing and the 2x margin cap leave the LEAPS book out.
 
 ### Sunday-report levers
 

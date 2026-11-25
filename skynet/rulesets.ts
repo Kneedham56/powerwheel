@@ -11,6 +11,7 @@
 import type { AI, RULES } from "../src/lib/rules";
 import type { HoldLevers } from "./hold";
 import type { LongLevers } from "./longs";
+import type { LeapLevers } from "./leaps";
 import type { SwingLevers } from "./swing";
 
 /** Deep copy of a type with readonly and literal types widened, so variants can change any value. */
@@ -124,6 +125,8 @@ export interface Levers {
   dteStrike?: "scaled" | "weekly";
   /** levers.dte: on Wednesday, buy back any put with this many days or fewer left (and not expiring this week), e.g. 21. */
   dteClose?: number;
+  /** Long-dated options (skynet/leaps.ts): LEAPS calls and puts held for months, the long-dated wheel (puts sold months out, then calls on assigned shares), calls sold against LEAPS calls. */
+  leaps?: LeapLevers;
 }
 
 /**
@@ -209,7 +212,7 @@ export function withOverrides(rs: Ruleset, sets: string[], name?: string): Rules
 }
 
 /** Every name ever given to a Skynet ruleset. Never reuse one. */
-export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn", "Jhin", "Xayah", "Zilean"];
+export const USED_NAMES = ["Kindred", "Nasus", "Azir", "Veigar", "Talon", "Zed", "Braum", "Ornn", "Jhin", "Xayah", "Zilean", "Lux", "Taric"];
 
 /** The first Skynet ruleset: the live RULES and AI as of RULES_VERSION 2026.11.16.1, unchanged. */
 export const KINDRED: Ruleset = {
@@ -477,7 +480,52 @@ export const ZILEAN: Ruleset = {
   levers: { ...AZIR.levers, dte: 45, putStrike: "delta", deltaTarget: 0.3, dteClose: 21 },
 };
 
-export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN, jhin: JHIN, xayah: XAYAH, zilean: ZILEAN };
+/**
+ * Lux: LEAPS calls only, no wheel (Claude's eighth solo round, 2026-11-24). Each Monday at the close it holds calls
+ * about 400 days out (300–540) on the 5 stocks Braum's ranking likes best (steady up weeks + 12-month momentum; names
+ * with weeklies and the size test that week), the strike nearest 0.70 delta, sized so delta × shares = the account
+ * ÷ 5 (1x stock-like exposure, about a third of the cash in premium). Sold and reopened with 120 days left; once a
+ * quarter a name ranked below 15th is sold for the best one not held. Pooled over 11 universes, 2018–2025: 36.2%/yr,
+ * max drawdown −48%, worst year −8% (Braum honest 25.3% / −40%, Azir 16.5%, SPY 12.3%); better than SPY on every
+ * list and from 2019, 2020 and 2021 starts (42%, 26%, 18% vs SPY's 15%, 13%, 13%). The names do the work: the same
+ * book on random names makes 13%, on fixed random names −2.5%. 3 or 4 names make a bit more with deeper drawdowns
+ * (3: −58%); 0.8 delta makes less (31.7%) and swings more by list; 1.3x makes 40% at −58%. Fills at half the spread cost
+ * about 4%/yr. Jhin's weekly calls make about as much with half the drawdown. The long-dated wheel (puts sold months
+ * out) made 2–7%/yr in every form and long puts lost, so Lux holds neither.
+ */
+export const LUX: Ruleset = {
+  ...AZIR,
+  name: "Lux",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "LEAPS calls only: 5 steady-momentum stocks, 0.70 delta about 400 days out at 1x exposure, rolled at 120 days left, names reviewed quarterly. No wheel, no puts.",
+  levers: {
+    ...AZIR.levers,
+    leaps: {
+      mode: "only",
+      calls: { maxNames: 5, rank: ["smooth", "mom12"], universe: "stocks", dte: [300, 540], target: 400, delta: 0.7, alloc: 1, rollAt: 120, review: "quarterly", keep: 15 },
+    },
+  },
+};
+
+/**
+ * Taric: Azir's wheel with no covered calls, plus Lux's LEAPS call book beside it (Claude's eighth solo round,
+ * 2026-11-24). The calls are paid from cash; the wheel's puts use what's left under the 2x margin cap (which leaves
+ * the LEAPS out, like the wheel's Monday sizing). Pooled over 11 universes: 43.0%/yr, max drawdown −53%, worst year
+ * −10%, Sharpe 0.95 (Lux 36.2%, Azir 16.5%, Xayah 41.8% / −41%). From 2019, 2020 and 2021 starts: 51%, 37%, 28%
+ * (SPY 15%, 13%, 13%). With covered calls kept it makes 36%.
+ */
+export const TARIC: Ruleset = {
+  ...AZIR,
+  name: "Taric",
+  parent: "Azir",
+  created: "2026-11-24",
+  note: "Azir with no covered calls + Lux's LEAPS call book beside it.",
+  ai: { ...AZIR.ai, coveredCall: { ...AZIR.ai.coveredCall, use: false } },
+  levers: { ...AZIR.levers, leaps: { ...LUX.levers!.leaps!, mode: "add" } },
+};
+
+export const RULESETS: Record<string, Ruleset> = { kindred: KINDRED, "kindred-roc1": KINDRED_ROC1, nasus: NASUS, azir: AZIR, veigar: VEIGAR, talon: TALON, zed: ZED, braum: BRAUM, ornn: ORNN, jhin: JHIN, xayah: XAYAH, zilean: ZILEAN, lux: LUX, taric: TARIC };
 
 export function getRuleset(name: string): Ruleset {
   const r = RULESETS[name.toLowerCase()];
