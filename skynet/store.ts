@@ -4,7 +4,7 @@
  * Every write is idempotent: rows for the same key are replaced, and fetch_log is updated in
  * the same transaction, so a crash at any point resumes cleanly.
  */
-import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
@@ -14,6 +14,28 @@ export const DB_PATH = resolve(process.env.SKYNET_DB ?? join(process.cwd(), "dat
 /** Per-symbol Parquet copies, readable while a pull holds the DuckDB file. */
 export const PARQUET_DIR = join(dirname(DB_PATH), "parquet");
 export const PROGRESS_FILE = join(dirname(DB_PATH), "progress.json");
+
+/**
+ * Rename `tmp` over `final` only after its bytes are on disk. Without the fsync, a power loss or
+ * crash can save the rename before the data, leaving `final` empty or without its Parquet footer
+ * (that's how HON's files broke on 2026-11-23).
+ */
+export function commitFile(tmp: string, final: string) {
+  const fd = openSync(tmp, "r+");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmp, final);
+}
+
+/** writeFileSync that a crash can't leave blank or half-written: temp file, fsync, rename. */
+export function writeFileDurable(path: string, data: string) {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, data);
+  commitFile(tmp, path);
+}
 
 const D = "DOUBLE";
 const I = "INTEGER";
@@ -137,7 +159,7 @@ export class Store {
           : fresh;
         await this.con.run(`COPY (SELECT * FROM (${src}) ORDER BY ${order}) TO ${q(tmp.replace(/\\/g, "/"))} (FORMAT parquet, COMPRESSION zstd)`);
         try {
-          renameSync(tmp, final);
+          commitFile(tmp, final);
         } catch (e) {
           console.warn(`  could not replace ${final} (open elsewhere?), keeping rows in DuckDB: ${e instanceof Error ? e.message : e}`);
           continue;
@@ -153,7 +175,7 @@ export class Store {
       mkdirSync(PARQUET_DIR, { recursive: true });
       const final = join(PARQUET_DIR, `${table}.parquet`);
       await this.con.run(`COPY ${table} TO ${q(`${final}.tmp`.replace(/\\/g, "/"))} (FORMAT parquet, COMPRESSION zstd)`);
-      renameSync(`${final}.tmp`, final);
+      commitFile(`${final}.tmp`, final);
     });
   }
 
