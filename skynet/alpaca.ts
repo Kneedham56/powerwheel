@@ -6,9 +6,9 @@
  * `split`-adjusted ones (for indicators), in the `adjustment` column.
  * Keys: ALPACA_KEY_ID and ALPACA_SECRET_KEY in .env.local (a free paper/data-only account).
  */
-import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PARQUET_DIR, Store, q } from "./store";
+import { PARQUET_DIR, Store, commitFile, q } from "./store";
 
 const BASE = "https://data.alpaca.markets/v2/stocks/bars";
 export const BARS_DIR = join(PARQUET_DIR, "stock_bars");
@@ -118,7 +118,7 @@ export async function pullBars(store: Store, symbols: string[], from: string, to
            FROM b LEFT JOIN seg USING (date) ORDER BY b.adjustment, b.date)
          TO ${q(`${final}.tmp`.replace(/\\/g, "/"))} (FORMAT parquet, COMPRESSION zstd)`,
       );
-      renameSync(`${final}.tmp`, final);
+      commitFile(`${final}.tmp`, final);
       unlinkSync(tmpJson);
     }
     const done = Math.min(b + BATCH, todo.length);

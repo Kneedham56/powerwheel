@@ -16,7 +16,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pullBars } from "./alpaca";
-import { DB_PATH, PARQUET_DIR, PROGRESS_FILE, Store, q } from "./store";
+import { DB_PATH, PARQUET_DIR, PROGRESS_FILE, Store, q, writeFileDurable } from "./store";
 import { thetaGet } from "./theta";
 
 // ---------------------------------------------------------------------------
@@ -432,7 +432,7 @@ async function pullPass(store: Store, mode: DaysMode) {
     complete.add(s.symbol);
     if (!finished.some((f) => f.symbol === s.symbol)) finished.push({ symbol: s.symbol, pass: mode, from: start, to: end, requests: 0, rows: 0, minutes: 0 });
   }
-  writeFileSync(PROGRESS_FILE, JSON.stringify({ updated: new Date().toISOString(), pass: mode, window: { from, to }, total: u.length, done: complete.size, next: null, elapsed: "0m", eta: "?", errors: 0, finished }, null, 1));
+  writeFileDurable(PROGRESS_FILE, JSON.stringify({ updated: new Date().toISOString(), pass: mode, window: { from, to }, total: u.length, done: complete.size, next: null, elapsed: "0m", eta: "?", errors: 0, finished }, null, 1));
   console.log(`  ${fmtN(complete.size)} symbols already complete for this pass (checked in ${fmtDur(Date.now() - sweep0)}).`);
 
   for (let i = 0; i < u.length && !stopping; i++) {
@@ -528,7 +528,7 @@ async function pullPass(store: Store, mode: DaysMode) {
       finished = finished.filter((f) => f.symbol !== sym);
       finished.push({ symbol: sym, pass: mode, from: start, to: end, requests: stat.req, rows: stat.rows, minutes: Math.round((Date.now() - ts) / 60_000) });
     }
-    writeFileSync(
+    writeFileDurable(
       PROGRESS_FILE,
       JSON.stringify({ updated: new Date().toISOString(), pass: mode, window: { from, to }, total: u.length, done: i + 1, next: u[i + 1]?.symbol ?? null, elapsed: fmtDur(el), eta: fmtDur(eta), errors, finished }, null, 1),
     );
